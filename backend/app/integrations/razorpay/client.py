@@ -1,14 +1,15 @@
 """Razorpay client wrapper.
 
 Thin seam over the official ``razorpay`` SDK: centralises auth, error
-translation and signature verification, and gives tests one place to inject a
-fake. Credentials come only from settings (env), never hardcoded.
+translation, timeouts and signature verification, and gives tests one place to
+inject a fake. Credentials come only from settings (env), never hardcoded.
 """
 from __future__ import annotations
 
 from typing import Any
 
 import razorpay
+import requests
 from razorpay.errors import (
     BadRequestError,
     GatewayError,
@@ -23,17 +24,34 @@ from app.utils.logging import get_logger
 log = get_logger("razorpay")
 
 
+class _TimeoutSession(requests.Session):
+    """A requests session that applies a default timeout to every call."""
+
+    def __init__(self, timeout: float):
+        super().__init__()
+        self._timeout = timeout
+
+    def request(self, *args, **kwargs):  # type: ignore[override]
+        kwargs.setdefault("timeout", self._timeout)
+        return super().request(*args, **kwargs)
+
+
 class RazorpayClient:
     def __init__(self, key_id: str | None = None, key_secret: str | None = None):
         self.key_id = key_id or settings.razorpay_key_id
         self.key_secret = key_secret or settings.razorpay_key_secret
         if not (self.key_id and self.key_secret):
             raise RazorpayError("Razorpay is not configured (missing key id/secret).")
-        self._sdk = razorpay.Client(auth=(self.key_id, self.key_secret))
+        self._sdk = razorpay.Client(
+            session=_TimeoutSession(settings.razorpay_timeout_seconds),
+            auth=(self.key_id, self.key_secret),
+        )
         self._sdk.set_app_details({"title": settings.app_name, "version": "1.0.0"})
 
     # ---- orders ----
-    def create_order(self, *, amount: int, currency: str, receipt: str, notes: dict | None = None) -> dict:
+    def create_order(
+        self, *, amount: int, currency: str, receipt: str, notes: dict | None = None
+    ) -> dict:
         try:
             return self._sdk.order.create(
                 {
@@ -47,6 +65,15 @@ class RazorpayClient:
         except (BadRequestError, GatewayError, ServerError) as exc:
             log.error("razorpay order.create failed: %s", exc)
             raise RazorpayError(f"Could not create payment order: {exc}") from exc
+
+    def find_order_by_receipt(self, receipt: str) -> dict | None:
+        """Recover a Razorpay order created in a prior (crashed) attempt."""
+        try:
+            data = self._sdk.order.all({"receipt": receipt, "count": 1})
+        except (BadRequestError, GatewayError, ServerError):
+            return None
+        items = data.get("items", []) if isinstance(data, dict) else []
+        return items[0] if items else None
 
     def fetch_order(self, razorpay_order_id: str) -> dict:
         try:

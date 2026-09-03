@@ -26,7 +26,7 @@ class ProductOut(BaseModel):
     active: bool
 
     @classmethod
-    def from_model(cls, p: Product) -> "ProductOut":
+    def from_model(cls, p: Product) -> ProductOut:
         try:
             tags = json.loads(p.tags) if p.tags else []
         except (ValueError, TypeError):
@@ -59,4 +59,5 @@ class CatalogSyncOut(BaseModel):
     created: int
     updated: int
     skipped: int
+    deactivated: int = 0
     error_count: int

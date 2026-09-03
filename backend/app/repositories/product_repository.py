@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.integrations.catalog.normalizer import NormalizedProduct
 from app.models.product import Product
 from app.utils.time import utcnow
@@ -93,12 +94,61 @@ class ProductRepository:
         stmt = select(Product.category).where(Product.active.is_(True)).distinct()
         return sorted({c for (c,) in self.db.execute(stmt) if c})
 
+    def all_external_ids(self, source: str) -> set[str]:
+        rows = self.db.execute(
+            select(Product.external_id).where(Product.source == source)
+        )
+        return {r[0] for r in rows}
+
     # --- writes ---
     def update_stock(self, product_id: str, new_stock: int) -> None:
         product = self.get_by_id(product_id)
         if product is not None:
             product.stock = max(0, new_stock)
             self.db.flush()
+
+    def try_decrement_stock(self, product_id: str, qty: int) -> bool:
+        """Atomically reserve ``qty`` units. Returns True only if it succeeded.
+
+        The guarded UPDATE is race-safe on SQLite and PostgreSQL.
+        """
+        if qty <= 0:
+            return True
+        result = self.db.execute(
+            update(Product)
+            .where(
+                Product.id == product_id,
+                Product.active.is_(True),
+                Product.stock >= qty,
+            )
+            .values(stock=Product.stock - qty)
+        )
+        self.db.flush()
+        return (result.rowcount or 0) == 1
+
+    def increment_stock(self, product_id: str, qty: int) -> None:
+        if qty <= 0:
+            return
+        self.db.execute(
+            update(Product).where(Product.id == product_id).values(stock=Product.stock + qty)
+        )
+        self.db.flush()
+
+    def deactivate_missing(self, source: str, seen_external_ids: set[str]) -> int:
+        """Mark products no longer present in the provider feed as inactive."""
+        if not seen_external_ids:
+            return 0
+        result = self.db.execute(
+            update(Product)
+            .where(
+                Product.source == source,
+                Product.active.is_(True),
+                Product.external_id.notin_(seen_external_ids),
+            )
+            .values(active=False)
+        )
+        self.db.flush()
+        return result.rowcount or 0
 
     def upsert(self, norm: NormalizedProduct) -> tuple[Product, bool]:
         """Insert or update by (source, external_id). Returns (product, created)."""
@@ -124,6 +174,10 @@ class ProductRepository:
             self.db.add(product)
             self.db.flush()
             return product, True
+        # Local stock is authoritative once we start decrementing it at checkout;
+        # don't let a periodic catalog sync clobber it.
+        if settings.catalog_sync_preserve_local_stock:
+            payload.pop("stock", None)
         for key, value in payload.items():
             setattr(existing, key, value)
         existing.active = True

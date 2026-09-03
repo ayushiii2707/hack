@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_admin
 from app.database.database import get_db
 from app.schemas.product import CatalogSyncOut, ProductListOut, ProductOut
 from app.services.product_service import ProductService
@@ -62,7 +63,8 @@ def get_product(product_id: str, svc: ProductService = Depends(_svc)):
     "/sync",
     response_model=CatalogSyncOut,
     tags=["admin"],
-    summary="Trigger catalog sync from the external provider (idempotent)",
+    dependencies=[Depends(require_admin)],
+    summary="Trigger catalog sync from the external provider (admin, idempotent)",
 )
 def trigger_sync(db: Session = Depends(get_db), limit: int | None = Query(None, ge=1, le=500)):
     from app.integrations.catalog.sync import sync_catalog

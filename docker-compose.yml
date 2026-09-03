@@ -1,0 +1,44 @@
+# Local production-shaped stack: Postgres + backend + built frontend (nginx).
+# Copy backend/.env.example -> backend/.env and fill in the real values first.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: checkout
+      POSTGRES_PASSWORD: checkout
+      POSTGRES_DB: checkout_copilot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U checkout"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://checkout:checkout@db:5432/checkout_copilot
+      ENVIRONMENT: production
+      SESSION_COOKIE_SECURE: "false"   # set true behind TLS
+      TRUSTED_HOSTS: "localhost,127.0.0.1,backend"
+      CORS_ORIGINS: "http://localhost:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: "http://localhost:8000"
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

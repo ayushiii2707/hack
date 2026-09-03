@@ -1,1 +1,0 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/auditdrawer.tsx","./src/components/cartpanel.tsx","./src/components/chatpanel.tsx","./src/components/checkoutmodal.tsx","./src/components/productgrid.tsx","./src/components/upsellcard.tsx","./src/lib/api.ts","./src/lib/razorpay.ts"],"version":"5.9.3"}

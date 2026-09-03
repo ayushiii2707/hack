@@ -1,22 +1,23 @@
-"""Payment APIs.
+"""Payment APIs (session-scoped).
 
-The amount is always derived from the internal Order. `verify` is the ONLY
-path that can mark an order paid, and only after Razorpay signature checks.
+Every call operates on *my* single open order (derived from the authenticated
+session). The amount always comes from that order. `verify` is the only path
+that can mark an order PAID, and only after signature + gateway reconciliation.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_session
 from app.core.config import settings
-from app.core.exceptions import PaymentVerificationError
+from app.core.exceptions import ForbiddenError, PaymentVerificationError
 from app.database.database import get_db
+from app.models.session import Session as ShopSession
 from app.schemas.payment import (
-    CreatePaymentOrderIn,
     PaymentAttemptOut,
     PaymentFailedIn,
     PaymentInitOut,
-    PaymentLinkIn,
     PaymentLinkOut,
     VerifyPaymentIn,
     VerifyResultOut,
@@ -27,31 +28,40 @@ from app.services.payment_service import PaymentService
 router = APIRouter(prefix="/payments", tags=["payments"])
 
 
-@router.post("/order", response_model=PaymentInitOut, summary="Create the Razorpay order for an internal order")
-def create_payment_order(body: CreatePaymentOrderIn, db: Session = Depends(get_db)):
-    data = PaymentService(db).create_payment_order(body.order_id)
-    return PaymentInitOut.from_init(data)
+def _open_order(db: Session, session: ShopSession):
+    return CheckoutService(db).open_order_for_session(session.id)
+
+
+@router.post("/order", response_model=PaymentInitOut, summary="Create the Razorpay order for my open order")
+def create_payment_order(
+    session: ShopSession = Depends(require_session), db: Session = Depends(get_db)
+):
+    order = _open_order(db, session)
+    return PaymentInitOut.from_init(PaymentService(db).ensure_payment_order(order))
 
 
 @router.post(
     "/verify",
     response_model=VerifyResultOut,
-    summary="Verify a Razorpay payment signature (only way an order becomes PAID)",
+    summary="Verify a Razorpay payment (the only path to PAID)",
 )
-def verify_payment(body: VerifyPaymentIn, db: Session = Depends(get_db)):
-    svc = PaymentService(db)
+def verify_payment(
+    body: VerifyPaymentIn,
+    session: ShopSession = Depends(require_session),
+    db: Session = Depends(get_db),
+):
+    order = _open_order(db, session)
     try:
-        result = svc.verify_payment(
-            order_id=body.order_id,
+        result = PaymentService(db).verify_payment(
+            order=order,
             razorpay_order_id=body.razorpay_order_id,
             razorpay_payment_id=body.razorpay_payment_id,
             razorpay_signature=body.razorpay_signature,
         )
     except PaymentVerificationError as exc:
-        # Attempt already recorded as FAILED inside the service.
         return VerifyResultOut(
             success=False,
-            order_status=(exc.details or {}).get("order_status", "PAYMENT_FAILED"),
+            order_status=(exc.details or {}).get("order_status", order.status.value),
             payment_status="FAILED",
             attempt_number=0,
             message=exc.message,
@@ -59,25 +69,25 @@ def verify_payment(body: VerifyPaymentIn, db: Session = Depends(get_db)):
     return VerifyResultOut(**result.__dict__)
 
 
-@router.post("/failed", response_model=VerifyResultOut, summary="Record a gateway payment failure")
-def payment_failed(body: PaymentFailedIn, db: Session = Depends(get_db)):
-    result = PaymentService(db).mark_payment_failed(
-        order_id=body.order_id,
-        reason=body.reason,
-        razorpay_payment_id=body.razorpay_payment_id,
-        error_code=body.error_code,
+@router.post("/failed", response_model=VerifyResultOut, summary="Advisory: my payment attempt failed at the gateway")
+def payment_failed(
+    body: PaymentFailedIn,
+    session: ShopSession = Depends(require_session),
+    db: Session = Depends(get_db),
+):
+    order = _open_order(db, session)
+    result = PaymentService(db).record_client_failure(
+        order=order, reason=body.reason, razorpay_payment_id=body.razorpay_payment_id
     )
     return VerifyResultOut(**result.__dict__)
 
 
-@router.post("/link", response_model=PaymentLinkOut, summary="Create a Razorpay Payment Link fallback")
-def payment_link(body: PaymentLinkIn, db: Session = Depends(get_db)):
-    customer = {
-        "name": body.customer_name,
-        "email": body.customer_email,
-        "contact": body.customer_contact,
-    }
-    data = PaymentService(db).create_payment_link(body.order_id, customer=customer)
+@router.post("/link", response_model=PaymentLinkOut, summary="Create a Razorpay Payment Link fallback for my order")
+def payment_link(
+    session: ShopSession = Depends(require_session), db: Session = Depends(get_db)
+):
+    order = _open_order(db, session)
+    data = PaymentService(db).create_payment_link(order)
     return PaymentLinkOut(
         payment_link_id=data["payment_link_id"],
         short_url=data.get("short_url"),
@@ -87,28 +97,34 @@ def payment_link(body: PaymentLinkIn, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/order/{order_id}/attempts", response_model=list[PaymentAttemptOut], summary="All attempts for an order")
-def list_attempts(order_id: str, db: Session = Depends(get_db)):
-    return [PaymentAttemptOut.from_model(p) for p in PaymentService(db).list_attempts(order_id)]
+@router.get("/attempts", response_model=list[PaymentAttemptOut], summary="Attempts for my most recent order")
+def list_attempts(
+    session: ShopSession = Depends(require_session), db: Session = Depends(get_db)
+):
+    order = CheckoutService(db).latest_order_for_session(session.id)
+    return [PaymentAttemptOut.from_model(p) for p in PaymentService(db).list_attempts(order.id)]
 
 
-@router.get("/{payment_id}", response_model=PaymentAttemptOut, summary="Get one payment attempt")
-def get_payment(payment_id: str, db: Session = Depends(get_db)):
-    return PaymentAttemptOut.from_model(PaymentService(db).get_payment(payment_id))
-
-
-if settings.environment != "production":
+if True:  # registered always; body guards on the flag so tests can toggle it
 
     @router.post(
-        "/order/{order_id}/simulate-failure",
+        "/simulate-failure",
         response_model=VerifyResultOut,
         tags=["demo"],
-        summary="[non-prod] Deterministically record a failed payment attempt for the demo",
+        summary="[demo only] deterministically record a failed attempt for my open order",
     )
-    def simulate_failure(order_id: str, db: Session = Depends(get_db)):
+    def simulate_failure(
+        session: ShopSession = Depends(require_session), db: Session = Depends(get_db)
+    ):
+        if not settings.enable_demo_endpoints:
+            raise ForbiddenError("Demo endpoints are disabled (set ENABLE_DEMO_ENDPOINTS=true).")
+        order = _open_order(db, session)
+        from app.core.constants import AuditActor
+
         result = PaymentService(db).mark_payment_failed(
-            order_id=order_id,
+            order_id=order.id,
             reason="Simulated gateway failure (demo): card declined by issuer.",
             error_code="BAD_REQUEST_ERROR",
+            actor=AuditActor.SYSTEM,
         )
         return VerifyResultOut(**result.__dict__)

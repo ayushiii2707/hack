@@ -1,13 +1,14 @@
 # Checkout Copilot
 
-A conversational AI shopping & checkout agent embedded in a demo merchant app.
-The customer talks naturally to build a cart and pay with **real Razorpay
+A conversational AI shopping & checkout agent embedded in a merchant app. The
+customer talks naturally to build a cart and pays with **real Razorpay
 Test-Mode APIs** — while a deterministic backend stays the sole authority for
-pricing, checkout, upsell limits and payments.
+identity, pricing, stock, checkout and payments.
 
-> The single most important design rule: **the LLM is never the source of truth.**
-> It orchestrates conversation and picks among a small set of allow-listed
-> tools. Every commerce fact and every hard limit is enforced in backend code.
+> Core rule: **the LLM is never the source of truth.** It orchestrates
+> conversation and picks among a small set of allow-listed tools. Every commerce
+> fact, every limit, and every payment transition is enforced in backend code
+> and, where integrity demands it, by database constraints.
 
 ---
 
@@ -15,216 +16,161 @@ pricing, checkout, upsell limits and payments.
 
 ```
                  ┌───────────────┐
-                 │   React UI    │  (Vite + TS) — displays, never computes totals
-                 └──────┬────────┘
-                        │  POST /agent/chat, REST
-                 ┌──────▼────────┐
-                 │   FastAPI     │  API layer — request/response only
+                 │   React UI    │  (Vite + TS) — displays; never computes totals
+                 └──────┬────────┘   sends `Authorization: Bearer <session token>`
+                        ▼
+     CORS · TrustedHost · request-id · per-IP rate limit
+                        ▼
+                 ┌───────────────┐
+                 │   FastAPI     │  auth + ownership on every stateful route
                  └──────┬────────┘
              ┌──────────┴───────────┐
              ▼                      ▼
    ┌───────────────────┐   ┌──────────────────┐
-   │  Agent (LangChain │   │  Direct REST     │
-   │   + Gemini)       │   │  cart/checkout/… │
+   │  Agent (LangChain │   │  Session-scoped  │
+   │   + Gemini)       │   │  REST endpoints  │
    └────────┬──────────┘   └────────┬─────────┘
-            ▼ constrained tools     │
-   ┌───────────────────┐            │
-   │  Policy engine    │  2nd line of defence (POLICY_BLOCKED audit)
-   └────────┬──────────┘            │
-            └──────────┬────────────┘
+     typed args → PolicyEngine → Service ──────┘
                        ▼
               ┌──────────────────┐
-              │  Service layer   │  commerce logic + invariants
+              │  Service layer   │  invariants, state machines, atomic ops
               └────────┬─────────┘
              ┌──────────┴───────────┐
              ▼                      ▼
      ┌───────────────┐     ┌──────────────────┐
-     │ Repositories  │     │ Integrations     │
-     │ (SQLAlchemy)  │     │ DummyJSON /      │
-     └───────┬───────┘     │ Razorpay / Gemini│
-             ▼             └──────────────────┘
-     ┌───────────────┐
-     │ SQLite (V1)   │  runtime source of truth
-     └───────────────┘
+     │ Repositories  │     │ Integrations     │  DummyJSON · Razorpay · Gemini
+     └───────┬───────┘     └──────────────────┘
+             ▼
+   PostgreSQL (prod) / SQLite (dev)   — CHECK + UNIQUE constraints, Alembic
 ```
 
-Layer responsibilities:
+### Security model
 
-| Layer        | Responsibility |
-|--------------|----------------|
-| API          | HTTP request/response, schema validation |
-| Agent        | natural-language orchestration, tool selection |
-| Policy       | permission / boundary enforcement (2nd line) |
-| Service      | business logic, invariants, state machines |
-| Repository   | persistence only, no business rules |
-| Integration  | external APIs (DummyJSON, Razorpay, Gemini) |
-| Model        | database representation |
-| Schema       | API / tool input & output validation |
-
-### What the LLM may and may **not** do
-
-| Allowed (via tools)                        | Never (enforced in backend)                |
-|--------------------------------------------|--------------------------------------------|
-| understand NL, choose an allowed tool      | calculate authoritative price / total      |
-| `search_products`, `get_product`           | invent products / stock / prices           |
-| `add_to_cart` / `update_cart_quantity` / `remove_from_cart` | exceed `MAX_ITEM_QUANTITY` |
-| `get_cart`, `calculate_total`              | modify DB rows / order totals directly     |
-| `request_upsell` (once per session)        | show a 2nd upsell / re-prompt after decline |
-| `start_checkout` (shows total, no payment) | execute payment / mark an order paid       |
-| `get_checkout_status`                      | call Razorpay directly                     |
-
-There is **no** `pay()` / `execute_payment` / `raw_sql` / `raw_razorpay` tool.
+* **Identity:** anonymous sessions. `POST /sessions` issues an opaque bearer
+  token; only a **peppered hash** of it is stored (`SESSION_TOKEN_SECRET`). No
+  accounts, no passwords. Every `/cart`, `/checkout`, `/upsell`, `/payments`,
+  `/agent`, `/audit` call is scoped to the token's session — there are **no
+  guessable path ids to attack**.
+* **Payments:** the amount always comes from the internal `Order`. An order
+  reaches `PAID` **only** after the Razorpay signature verifies **and** an
+  independent gateway fetch confirms `status` + `amount` + `currency` +
+  `order_id`. Webhooks are signature-required (the app refuses to start in
+  production without `RAZORPAY_WEBHOOK_SECRET`), amount-checked, and deduped by
+  provider event id in the database.
+* **Concurrency:** the one-shot upsell, "one open order per cart", and stock
+  reservation are enforced by **atomic guarded `UPDATE`s / `UNIQUE` columns**,
+  not check-then-act — proven by threaded tests.
+* **Agent:** 10 tools, none of which can run SQL, touch the database, call
+  Razorpay, execute a payment, or mutate session state. Typed args → policy →
+  service. Prompt injection is covered by regression tests.
+* **Abuse:** per-IP token-bucket rate limits on `/agent/chat`, `/payments/*`,
+  `/sessions`, `/webhooks`, search. Configurable.
+* **Ops:** `X-Request-ID` on every request + audit row; structured JSON logs
+  (`LOG_JSON=true`); `/health` + `/health/ready`; Alembic migrations; Dockerfile
+  (non-root, healthcheck) + `docker-compose.yml` (Postgres); GitHub Actions CI
+  (lint + `alembic check` + tests + `npm audit` + build).
 
 ---
 
 ## Features
 
-- Conversational product discovery (natural language → internal DB search)
-- Cart management by chat or by clicking — quantity cap + stock enforced server-side
-- Authoritative price breakdown (integer **paise**, deterministic shipping rule)
-- **Exactly one** explainable upsell per session, price-capped, never repeated
-- Checkout review that shows the **full price incl. fees before** any payment
-- **No forced account creation** — a session id is the only identity
-- Real Razorpay **Test Mode** Orders + Payment Links + signature verification
-- Deliberate payment failure → retry → payment-link fallback, all persisted
-- Append-only audit trail with a plain-language reason on every business action
-- Idempotent checkout confirm, payment verify and webhook handling
+- Conversational discovery, cart building, one explainable upsell, checkout,
+  real Razorpay Test-Mode payment, deliberate failure → retry / payment-link
+  recovery, full audit trail.
+- **No forced account creation.** **Full price shown before payment.**
+- Stock is **atomically reserved** at checkout (no overselling); released on
+  cancel.
 
-### Deliberate scope boundaries (say this in the pitch)
+### Deliberate V1 scope boundaries
 
-- The catalog is a **mock set** ingested from DummyJSON, not a live merchant inventory.
-- The upsell model is a **simple, explainable weighted score**, not a production recommender.
-
-Both are intentional choices for the time box, not hidden gaps.
+- The catalog is a **mock set** ingested from DummyJSON, not a live merchant
+  inventory. A local product's stock becomes authoritative once reserved; sync
+  no longer clobbers it.
+- The upsell model is a **simple, explainable weighted score**, not a
+  production recommender.
 
 ---
 
-## Tech stack
-
-**Backend:** Python 3.11+, FastAPI, SQLAlchemy 2, SQLite, Pydantic v2 / pydantic-settings,
-httpx, LangChain (`create_agent`) + `langchain-google-genai` (Gemini), `razorpay`, pytest.
-
-**Frontend:** React 18, Vite, TypeScript, plain CSS. Talks only to the backend API.
-
----
-
-## Setup
-
-### 1. Backend
+## Setup — local (SQLite)
 
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # then fill in the keys (see below)
-python -m app.database.seed   # create tables + sync catalog from DummyJSON
-uvicorn app.main:app --reload # http://localhost:8000  (docs at /docs)
+cp .env.example .env            # dev works out of the box; fill keys for the full demo
+python -m app.database.seed     # migrate + sync catalog
+uvicorn app.main:app --reload   # http://localhost:8000  (docs at /docs)
 ```
-
-`python -m app.database.seed` is idempotent: it creates tables, pulls the catalog
-into SQLite, and verifies products exist. Re-run any time to refresh the catalog
-(`python -m app.integrations.catalog.sync` does just the sync).
-
-> Run the seed **before** starting `uvicorn`. Don't recreate the DB file while the
-> server is running.
-
-### 2. Frontend
 
 ```bash
 cd frontend
 npm install
-cp .env.example .env          # VITE_API_BASE=/api uses the dev proxy to :8000
-npm run dev                   # http://localhost:5173
+cp .env.example .env            # VITE_API_BASE=/api uses the dev proxy
+npm run dev                     # http://localhost:5173
 ```
+
+## Setup — production-shaped (Docker + Postgres)
+
+```bash
+cp backend/.env.example backend/.env   # set SESSION_TOKEN_SECRET, Razorpay keys,
+                                       # ENVIRONMENT=production, TRUSTED_HOSTS, CORS_ORIGINS
+docker compose up --build              # frontend :8080, backend :8000, postgres
+```
+The backend container runs `alembic upgrade head` on start and refuses to boot
+if the config is unsafe for `ENVIRONMENT=production` (see
+`Settings.validate_for_environment`).
 
 ---
 
-## Environment variables (`backend/.env`)
+## Environment variables
+
+Every variable is documented inline in [`backend/.env.example`](backend/.env.example).
+The security-critical ones:
 
 | Variable | Meaning |
 |----------|---------|
-| `DATABASE_URL` | SQLAlchemy URL. Default `sqlite:///./checkout_copilot.db`. |
-| `GEMINI_API_KEY` | Google AI Studio key. If empty, a deterministic keyword-router fallback agent is used (same tools/policies) so the demo still runs. |
-| `GEMINI_MODEL` | Default `gemini-2.0-flash`. |
-| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | **Test Mode** keys (`rzp_test_…`) from Razorpay Dashboard → Settings → API Keys. |
-| `RAZORPAY_WEBHOOK_SECRET` | Secret you set when creating the webhook; used to verify `POST /webhooks/razorpay`. |
-| `CATALOG_BASE_URL` | External catalog provider. Default `https://dummyjson.com`. |
-| `CATALOG_SYNC_LIMIT` | How many products to ingest (194 = all of DummyJSON). |
-| `CATALOG_PRICE_MULTIPLIER` | DummyJSON prices are small USD floats; `35` turns them into realistic INR. |
-| `MAX_ITEM_QUANTITY` | Per-product cap. Default `5`. Breach → `POLICY_BLOCKED` audit + 403. |
-| `UPSELL_PRICE_CAP_PERCENT` | Upsell must be ≤ this % of the cart subtotal. Default `20`. |
-| `SHIPPING_FEE` | Flat shipping in **paise**. Default `500` (₹5). |
-| `FREE_SHIPPING_THRESHOLD` | Subtotal in **paise** at/above which shipping is free. Default `200000` (₹2,000). |
-
-Money-shaped values are integer **paise** everywhere in the backend. The frontend
-only formats for display.
+| `SESSION_TOKEN_SECRET` | HMAC pepper for session-token hashes. **Required (≥32 chars) in production.** |
+| `RAZORPAY_KEY_ID` / `_SECRET` | Test-Mode keys (`rzp_test_…`). |
+| `RAZORPAY_WEBHOOK_SECRET` | **Required once Razorpay keys are set.** Unsigned webhooks are rejected. |
+| `ADMIN_API_KEY` | Enables `/audit/admin` + `/products/sync`. Blank = those endpoints disabled. |
+| `ENABLE_DEMO_ENDPOINTS` | `/payments/simulate-failure`. **Must be false in production.** |
+| `GEMINI_API_KEY` | Optional — a deterministic keyword router (same tools/policies) runs without it. |
+| `DATABASE_URL` | `sqlite:///…` for dev; `postgresql+psycopg://…` for production. |
+| `TRUSTED_HOSTS`, `CORS_ORIGINS` | Must be explicit lists in production. |
+| `SESSION_COOKIE_SECURE` | Must be `true` behind HTTPS. |
+| `RATE_LIMIT_*` | Per-IP limits (requests/minute) per endpoint class. |
 
 ### Razorpay Test Mode
 
-1. Create a Razorpay account, switch the dashboard to **Test Mode**.
-2. Settings → API Keys → **Generate Test Key**. Put the id/secret in `.env`.
-3. (Optional, for webhooks) Settings → Webhooks → add `https://<tunnel>/webhooks/razorpay`,
-   set a secret, subscribe to `payment.captured`, `payment.failed`, `order.paid`.
-   Put the secret in `RAZORPAY_WEBHOOK_SECRET`.
-4. Test card for success: `4111 1111 1111 1111`, any future expiry, any CVV, any name.
-   To simulate a **failure**, choose **Failure** on Razorpay's test payment page, or
-   use the app's `Demo: force failure` button (deterministic, non-prod only).
-
-### Gemini
-
-Get a key at <https://aistudio.google.com/app/apikey> → `GEMINI_API_KEY`.
-Without it the app transparently uses a small deterministic intent router that
-calls the exact same tools and policies (search / cart / upsell / checkout).
+1. Razorpay dashboard → **Test Mode** → Settings → API Keys → generate.
+2. Settings → Webhooks → add `https://<host>/webhooks/razorpay`, set a secret
+   (→ `RAZORPAY_WEBHOOK_SECRET`), subscribe to `payment.captured`,
+   `payment.failed`, `order.paid`.
+3. Test card for success: `4111 1111 1111 1111`, any future expiry / CVV. For a
+   failure choose **Failure** on Razorpay's test page, or use the app's
+   `Demo: force failure` button (non-prod only).
 
 ---
 
-## Running the tests
+## Tests
 
 ```bash
-cd backend && pytest            # 75 tests
+cd backend && pytest            # 121 tests
+cd backend && ruff check .
+cd frontend && npm run build
 ```
 
-Coverage includes every hard boundary: quantity `999999` blocked + audited, no
-payment tool exists, second upsell blocked, declined-then-retry blocked, and a
-frontend "payment succeeded" claim without a valid signature is **not** marked
-paid. Plus catalog sync idempotency, price snapshots, pricing in paise, checkout
-state machine, Razorpay order/verify/retry/link, and duplicate-webhook safety.
+Coverage includes: **no cross-session access** (auth/IDOR), **forged webhook
+rejected / fails closed without a secret**, **signature-valid-but-wrong-amount
+rejected**, **one-shot upsell holds under 16 concurrent requests**, **concurrent
+checkout confirm creates exactly one order**, **10 buyers racing for 3 units →
+exactly 3 succeed**, terminal payment attempts are immutable, duplicate webhook
+event ids are ignored, prompt injection cannot bypass any control, and a full
+`session → search → cart → upsell → decline → confirm → fail → retry → PAID →
+audit` end-to-end flow (`tests/test_e2e.py`).
 
 ---
 
-## Demo flow
+## Demo
 
-See [`DEMO.md`](DEMO.md) for the full script. In short:
-
-1. "Show me running shoes under ₹3000" → agent searches the internal DB.
-2. "Add the first one" (or click **Add to cart**).
-3. "Show me my cart" → authoritative subtotal / shipping / total.
-4. **Review & Checkout** → full price shown before anything is charged.
-5. Exactly one upsell appears, with a concrete reason and a price cap.
-6. Decline it → recorded as `UPSELL_DECLINED`, never asked again.
-7. **Proceed to Payment** → backend creates a real Razorpay Test-Mode order.
-8. Pay with the failure option → `PAYMENT_FAILED` recorded, order **not** paid.
-9. **Retry payment** with `4111 1111 1111 1111` → `PAYMENT_SUCCESS`, order `PAID`,
-   session `COMPLETED`. (Or **Get payment link** for the Razorpay Payment Link fallback.)
-10. Open **Audit trail** to show every step with its plain-language reason.
-
----
-
-## Project layout
-
-```
-backend/app/
-  core/         config, constants (enums + state-transition whitelist), exceptions, security
-  api/          health, sessions, products, cart, checkout, upsell, payments, webhooks, agent, audit
-  agent/        agent.py, prompts, state, tools, tool_schemas, policies
-  services/     session, product, cart, pricing, checkout, upsell, payment, audit
-  models/       product, session, cart, cart_item, order, payment, audit_log
-  schemas/      pydantic request/response models
-  repositories/ persistence only
-  integrations/ catalog/{base,dummyjson,normalizer,sync}, razorpay/{client,orders,payments,payment_links}, llm/gemini
-  database/     database.py, seed.py
-  utils/        money (paise), ids, time, logging
-backend/tests/  test_products, test_cart, test_pricing, test_upsell, test_checkout,
-                test_payments, test_policies, test_agent, test_agent_fallback, test_money, test_health
-frontend/src/   App.tsx, lib/{api,razorpay}, components/{ChatPanel,ProductGrid,CartPanel,UpsellCard,CheckoutModal,AuditDrawer}
-```
+See [`DEMO.md`](DEMO.md).

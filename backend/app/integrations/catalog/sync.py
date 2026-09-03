@@ -27,6 +27,7 @@ class SyncResult:
     created: int = 0
     updated: int = 0
     skipped: int = 0
+    deactivated: int = 0
     errors: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -39,6 +40,7 @@ class SyncResult:
             "created": self.created,
             "updated": self.updated,
             "skipped": self.skipped,
+            "deactivated": self.deactivated,
             "error_count": len(self.errors),
         }
 
@@ -55,6 +57,7 @@ def sync_catalog(
     audit = AuditService(db)
     result = SyncResult()
 
+    seen_external_ids: set[str] = set()
     skip = 0
     page_size = min(limit, 100)
     while result.fetched < limit:
@@ -69,6 +72,7 @@ def sync_catalog(
                 result.skipped += 1
                 result.errors.append(str(exc))
                 continue
+            seen_external_ids.add(norm.external_id)
             _, created = repo.upsert(norm)
             if created:
                 result.created += 1
@@ -78,6 +82,12 @@ def sync_catalog(
         if len(batch) < page_size:
             break
 
+    # A full sweep (we reached the provider's end, no per-run limit truncation)
+    # lets us safely deactivate products that vanished from the feed.
+    full_sweep = result.fetched < limit or limit >= settings.catalog_sync_limit
+    if full_sweep and seen_external_ids:
+        result.deactivated = repo.deactivate_missing(provider.source, seen_external_ids)
+
     db.commit()
 
     audit.log_event(
@@ -85,7 +95,8 @@ def sync_catalog(
         action=AuditAction.CATALOG_SYNCED,
         reason=(
             f"Synced {result.fetched} products from {provider.source}: "
-            f"{result.created} created, {result.updated} updated, {result.skipped} skipped"
+            f"{result.created} created, {result.updated} updated, "
+            f"{result.skipped} skipped, {result.deactivated} deactivated"
         ),
         metadata=result.as_dict() | {"source": provider.source},
     )

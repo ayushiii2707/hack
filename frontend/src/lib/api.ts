@@ -1,6 +1,25 @@
-/** Typed backend client. The frontend NEVER computes authoritative totals. */
+/** Typed backend client. The frontend NEVER computes authoritative totals
+ *  or decides payment success. Every stateful call carries the session bearer
+ *  token; the backend derives the cart / order from it. */
 
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "/api";
+const TOKEN_KEY = "cc.session_token";
+
+export function getToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+export function setToken(t: string | null) {
+  try {
+    if (t) localStorage.setItem(TOKEN_KEY, t);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 export class ApiError extends Error {
   code: string;
@@ -13,8 +32,13 @@ export class ApiError extends Error {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    credentials: "include",
     ...init,
   });
   const text = await res.text();
@@ -78,14 +102,11 @@ export interface SessionInfo {
   upsell_accepted: boolean;
   upsell_declined: boolean;
 }
+export interface SessionCreated extends SessionInfo {
+  session_token: string;
+}
 export interface UIAction {
-  type:
-    | "SHOW_PRODUCTS"
-    | "SHOW_CART"
-    | "SHOW_UPSELL"
-    | "SHOW_CHECKOUT"
-    | "SHOW_PAYMENT"
-    | "SHOW_ERROR";
+  type: "SHOW_PRODUCTS" | "SHOW_CART" | "SHOW_UPSELL" | "SHOW_CHECKOUT" | "SHOW_PAYMENT" | "SHOW_ERROR";
   payload: Record<string, unknown>;
 }
 export interface AgentReply {
@@ -112,6 +133,7 @@ export interface CheckoutReview {
   upsell_pending: boolean;
   issues: unknown[];
   ready_for_payment: boolean;
+  has_open_order: boolean;
 }
 export interface OrderInfo {
   order_id: string;
@@ -158,6 +180,7 @@ export interface PaymentAttempt {
   razorpay_payment_link_id: string | null;
   payment_link_url: string | null;
   failure_reason: string | null;
+  settled_amount: number | null;
   created_at: string | null;
 }
 export interface PaymentLink {
@@ -171,6 +194,7 @@ export interface AuditEntry {
   id: string;
   session_id: string | null;
   order_id: string | null;
+  request_id: string | null;
   actor: string;
   action: string;
   reason: string;
@@ -179,52 +203,63 @@ export interface AuditEntry {
 }
 
 export const api = {
-  health: () => req<{ status: string; razorpay_configured: boolean; gemini_configured: boolean }>("/health"),
-  createSession: () => req<SessionInfo>("/sessions", { method: "POST" }),
-  getSession: (id: string) => req<SessionInfo>(`/sessions/${id}`),
+  health: () =>
+    req<{ razorpay_configured: boolean; razorpay_webhook_secured: boolean; gemini_configured: boolean }>(
+      "/health",
+    ),
 
-  chat: (session_id: string, message: string) =>
-    req<AgentReply>("/agent/chat", { method: "POST", body: JSON.stringify({ session_id, message }) }),
+  async ensureSession(): Promise<SessionInfo> {
+    if (getToken()) {
+      try {
+        return await req<SessionInfo>("/sessions/me");
+      } catch {
+        setToken(null);
+      }
+    }
+    const created = await req<SessionCreated>("/sessions", { method: "POST" });
+    setToken(created.session_token);
+    return created;
+  },
+  resetSession() {
+    setToken(null);
+  },
 
   searchProducts: (q: string) =>
     req<{ items: Product[]; count: number }>(`/products/search?q=${encodeURIComponent(q)}&limit=12`),
   getProduct: (id: string) => req<Product>(`/products/${id}`),
   getProducts: (ids: string[]) => Promise.all(ids.map((i) => api.getProduct(i))),
 
-  getCart: (cartId: string) => req<Cart>(`/cart/${cartId}`),
-  addItem: (cartId: string, product_id: string, quantity = 1) =>
-    req<Cart>(`/cart/${cartId}/items`, { method: "POST", body: JSON.stringify({ product_id, quantity }) }),
-  updateItem: (cartId: string, productId: string, quantity: number) =>
-    req<Cart>(`/cart/${cartId}/items/${productId}`, { method: "PATCH", body: JSON.stringify({ quantity }) }),
-  removeItem: (cartId: string, productId: string) =>
-    req<Cart>(`/cart/${cartId}/items/${productId}`, { method: "DELETE" }),
+  getCart: () => req<Cart>("/cart"),
+  addItem: (product_id: string, quantity = 1) =>
+    req<Cart>("/cart/items", { method: "POST", body: JSON.stringify({ product_id, quantity }) }),
+  updateItem: (productId: string, quantity: number) =>
+    req<Cart>(`/cart/items/${productId}`, { method: "PATCH", body: JSON.stringify({ quantity }) }),
+  removeItem: (productId: string) => req<Cart>(`/cart/items/${productId}`, { method: "DELETE" }),
 
-  upsell: (sessionId: string, peek = false) =>
-    req<Upsell>(`/upsell/${sessionId}${peek ? "?peek=true" : ""}`),
-  acceptUpsell: (sessionId: string) => req(`/upsell/${sessionId}/accept`, { method: "POST" }),
-  declineUpsell: (sessionId: string) => req(`/upsell/${sessionId}/decline`, { method: "POST" }),
+  upsell: () => req<Upsell>("/upsell", { method: "POST" }),
+  previewUpsell: () => req<Upsell>("/upsell/preview"),
+  acceptUpsell: () => req("/upsell/accept", { method: "POST" }),
+  declineUpsell: () => req("/upsell/decline", { method: "POST" }),
 
-  review: (sessionId: string) => req<CheckoutReview>(`/checkout/${sessionId}/review`, { method: "POST" }),
-  summary: (sessionId: string) => req<CheckoutReview>(`/checkout/${sessionId}/summary`),
-  confirm: (sessionId: string) => req<ConfirmCheckout>(`/checkout/${sessionId}/confirm`, { method: "POST" }),
+  review: () => req<CheckoutReview>("/checkout/review", { method: "POST" }),
+  summary: () => req<CheckoutReview>("/checkout/summary"),
+  confirm: () => req<ConfirmCheckout>("/checkout/confirm", { method: "POST" }),
+  cancelCheckout: () => req<void>("/checkout/cancel", { method: "POST" }),
 
-  verifyPayment: (p: {
-    order_id: string;
-    razorpay_order_id: string;
-    razorpay_payment_id: string;
-    razorpay_signature: string;
-  }) => req<VerifyResult>("/payments/verify", { method: "POST", body: JSON.stringify(p) }),
-  reportFailure: (order_id: string, reason: string, razorpay_payment_id?: string) =>
+  createPaymentOrder: () => req<PaymentInit>("/payments/order", { method: "POST" }),
+  verifyPayment: (p: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) =>
+    req<VerifyResult>("/payments/verify", { method: "POST", body: JSON.stringify(p) }),
+  reportFailure: (reason: string, razorpay_payment_id?: string) =>
     req<VerifyResult>("/payments/failed", {
       method: "POST",
-      body: JSON.stringify({ order_id, reason, razorpay_payment_id }),
+      body: JSON.stringify({ reason, razorpay_payment_id }),
     }),
-  simulateFailure: (order_id: string) =>
-    req<VerifyResult>(`/payments/order/${order_id}/simulate-failure`, { method: "POST" }),
-  paymentLink: (order_id: string) =>
-    req<PaymentLink>("/payments/link", { method: "POST", body: JSON.stringify({ order_id }) }),
-  attempts: (orderId: string) => req<PaymentAttempt[]>(`/payments/order/${orderId}/attempts`),
+  simulateFailure: () => req<VerifyResult>("/payments/simulate-failure", { method: "POST" }),
+  paymentLink: () => req<PaymentLink>("/payments/link", { method: "POST" }),
+  attempts: () => req<PaymentAttempt[]>("/payments/attempts"),
 
-  audit: (sessionId?: string) =>
-    req<{ items: AuditEntry[]; count: number }>(`/audit${sessionId ? `?session_id=${sessionId}` : ""}`),
+  chat: (message: string) =>
+    req<AgentReply>("/agent/chat", { method: "POST", body: JSON.stringify({ message }) }),
+
+  audit: () => req<{ items: AuditEntry[]; count: number }>("/audit"),
 };

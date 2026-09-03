@@ -1,11 +1,18 @@
-"""Session model – one customer shopping interaction.
+"""Session model – one anonymous customer shopping interaction.
 
 ``upsell_shown`` is a hard, session-level guard. Once true it is NEVER reset
 by any cart change; only a brand-new session gets a fresh upsell opportunity.
+
+``token_hash`` is the peppered hash of the opaque bearer token issued to the
+one client that owns this session. Authorisation for every cart/checkout/
+payment/agent call is derived from it.
 """
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Enum as SAEnum, String, Text
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, String, Text
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.constants import SessionState
@@ -23,6 +30,10 @@ class Session(Base, TimestampMixin):
         nullable=False,
     )
 
+    # Ownership: peppered HMAC of the bearer token. Unique + indexed for O(1) auth.
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    token_issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     upsell_shown: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     upsell_accepted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     upsell_declined: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -32,7 +43,7 @@ class Session(Base, TimestampMixin):
 
     cart = relationship("Cart", back_populates="session", uselist=False, cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="session", cascade="all, delete-orphan")
-    audit_logs = relationship("AuditLog", back_populates="session", cascade="all, delete-orphan")
+    audit_logs = relationship("AuditLog", back_populates="session")
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Session {self.id} {self.state} upsell_shown={self.upsell_shown}>"

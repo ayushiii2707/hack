@@ -1,8 +1,10 @@
-"""Cart business logic and the hard quantity/stock boundaries.
+"""Cart business logic and the hard quantity / stock / lifecycle boundaries.
 
 These checks are enforced here regardless of caller, so they hold even if a
-future caller forgets the agent policy layer. Cap breaches are audited as
-``POLICY_BLOCKED``.
+future caller forgets the agent policy layer:
+  * quantity: 1 .. MAX_ITEM_QUANTITY  (cap breach -> POLICY_BLOCKED audit)
+  * stock: resulting quantity must be available now (final check is at checkout)
+  * lifecycle: a cart that is not ACTIVE cannot be mutated (post-checkout lock)
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from app.core.config import settings
 from app.core.constants import AuditAction, AuditActor, CartStatus, SessionState
 from app.core.exceptions import (
     CartNotFoundError,
+    ConflictError,
     EmptyCartError,
     InvalidQuantityError,
     PolicyViolationError,
@@ -61,6 +64,23 @@ class CartService:
         return cart
 
     # --- guards ---
+    def _assert_cart_mutable(self, cart: Cart) -> None:
+        if cart.status != CartStatus.ACTIVE:
+            raise ConflictError(
+                "This cart is locked because checkout has started. "
+                "Cancel checkout to change your cart.",
+                details={"cart_status": cart.status.value},
+            )
+        session = self.sessions.get(cart.session_id)
+        if session is not None and session.state in (
+            SessionState.PAYMENT_PENDING,
+            SessionState.COMPLETED,
+        ):
+            raise ConflictError(
+                "Your cart cannot be changed while a payment is in progress.",
+                details={"session_state": session.state.value},
+            )
+
     def _assert_quantity_within_policy(
         self, quantity: int, *, cart_id: str, product_id: str, session_id: str | None
     ) -> None:
@@ -91,6 +111,7 @@ class CartService:
         self, cart_id: str, product_id: str, quantity: int, *, actor: AuditActor = AuditActor.AGENT
     ) -> Cart:
         cart = self.get_cart(cart_id)
+        self._assert_cart_mutable(cart)
         session_id = cart.session_id
         existing = self.repo.get_item(cart_id, product_id)
         resulting_qty = quantity + (existing.quantity if existing else 0)
@@ -118,11 +139,7 @@ class CartService:
             action=action,
             reason=reason,
             session_id=session_id,
-            metadata={
-                "product_id": product_id,
-                "quantity": resulting_qty,
-                "unit_price": product.price,
-            },
+            metadata={"product_id": product_id, "quantity": resulting_qty, "unit_price": product.price},
         )
         self._bump_to_cart_building(session_id)
         self.db.commit()
@@ -138,6 +155,7 @@ class CartService:
         actor: AuditActor = AuditActor.AGENT,
     ) -> Cart:
         cart = self.get_cart(cart_id)
+        self._assert_cart_mutable(cart)
         item = self.repo.get_item(cart_id, product_id)
         if item is None:
             raise InvalidQuantityError("That product is not in the cart.")
@@ -164,6 +182,7 @@ class CartService:
         self, cart_id: str, product_id: str, *, actor: AuditActor = AuditActor.AGENT
     ) -> Cart:
         cart = self.get_cart(cart_id)
+        self._assert_cart_mutable(cart)
         item = self.repo.get_item(cart_id, product_id)
         if item is None:
             raise InvalidQuantityError("That product is not in the cart.")

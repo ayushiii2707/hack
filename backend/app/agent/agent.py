@@ -216,9 +216,19 @@ def run_agent(
 
         from langchain.agents import create_agent
 
+        from app.core.config import settings as _s
+
         agent = create_agent(model, tools)
-        lc_result = agent.invoke({"messages": _to_lc_messages(history, message)})
-        reply = _final_text(lc_result)
+        try:
+            lc_result = agent.invoke(
+                {"messages": _to_lc_messages(history, message)},
+                config={"recursion_limit": _s.agent_max_tool_iterations * 2 + 1},
+            )
+            reply = _final_text(lc_result)
+        except Exception as exc:  # LLM/tool-loop failure -> safe, bounded fallback
+            log.warning("agent LLM path failed (%s); using deterministic fallback", exc)
+            ctx.invocations.clear()
+            reply = _run_fallback(ctx, tools, message)
 
     actions = _build_actions(ctx)
 

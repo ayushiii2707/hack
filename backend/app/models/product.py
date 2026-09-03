@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Index,
     Integer,
@@ -23,6 +24,8 @@ class Product(Base, TimestampMixin):
     __tablename__ = "products"
     __table_args__ = (
         UniqueConstraint("source", "external_id", name="uq_product_source_external"),
+        CheckConstraint("price >= 0", name="ck_product_price_nonneg"),
+        CheckConstraint("stock >= 0", name="ck_product_stock_nonneg"),
         Index("ix_product_category", "category"),
         Index("ix_product_active", "active"),
         Index("ix_product_sku", "sku"),

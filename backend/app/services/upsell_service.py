@@ -224,8 +224,14 @@ class UpsellService:
         cap = self.price_cap_for(cart)
         best = self.select_best_candidate(cart, price_cap=cap)
 
-        # The guard is consumed even when nothing qualifies, so we never retry.
-        self.sessions.mark_upsell_shown(session)
+        # Atomically consume the single per-session opportunity. Only the
+        # request that flips the flag proceeds; concurrent callers lose here.
+        if not self.sessions.try_claim_upsell(session_id):
+            self.db.rollback()
+            raise UpsellAlreadyShownError(
+                "An upsell was already shown in this session; only one is allowed."
+            )
+        self.db.refresh(session)
 
         if best is None:
             # Nothing to accept/decline -> mark resolved so checkout isn't blocked.

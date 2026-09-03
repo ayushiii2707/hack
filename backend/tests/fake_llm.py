@@ -21,7 +21,7 @@ class FakeToolCallingModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "fake-tool-calling"
 
-    def bind_tools(self, tools: Any, **kwargs: Any) -> "FakeToolCallingModel":  # noqa: D401
+    def bind_tools(self, tools: Any, **kwargs: Any) -> FakeToolCallingModel:
         return self
 
     def _generate(

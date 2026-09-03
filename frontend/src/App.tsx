@@ -10,7 +10,6 @@ import {
   api,
   type Cart,
   type CheckoutReview,
-  type OrderInfo,
   type PaymentAttempt,
   type PaymentInit,
   type Product,
@@ -19,8 +18,6 @@ import {
   type VerifyResult,
 } from "./lib/api";
 import { openRazorpayCheckout, razorpayAvailable } from "./lib/razorpay";
-
-const SESSION_KEY = "cc.session_id";
 
 export default function App() {
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -32,35 +29,26 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [checkoutHint, setCheckoutHint] = useState(false);
 
-  // checkout state
   const [review, setReview] = useState<CheckoutReview | null>(null);
-  const [order, setOrder] = useState<OrderInfo | null>(null);
   const [phase, setPhase] = useState<CheckoutPhase>("review");
   const [payResult, setPayResult] = useState<VerifyResult | null>(null);
   const [attempts, setAttempts] = useState<PaymentAttempt[]>([]);
   const [paymentLinkUrl, setPaymentLinkUrl] = useState<string | null>(null);
 
-  const refreshCart = useCallback(async (cartId: string) => {
-    setCart(await api.getCart(cartId));
+  const refreshCart = useCallback(async () => setCart(await api.getCart()), []);
+  const refreshSession = useCallback(async () => {
+    setSession(await api.ensureSession());
   }, []);
 
-  const bootstrap = useCallback(async () => {
-    setHealth(await api.health().catch(() => null));
-    const saved = localStorage.getItem(SESSION_KEY);
-    let s: SessionInfo | null = null;
-    if (saved) s = await api.getSession(saved).catch(() => null);
-    if (!s) {
-      s = await api.createSession();
-      localStorage.setItem(SESSION_KEY, s.session_id);
-    }
-    setSession(s);
-    await refreshCart(s.cart_id);
-  }, [refreshCart]);
-
   useEffect(() => {
-    bootstrap().catch((e) => setError(String(e)));
-  }, [bootstrap]);
+    (async () => {
+      setHealth(await api.health().catch(() => null));
+      setSession(await api.ensureSession());
+      await refreshCart();
+    })().catch((e) => setError(String(e)));
+  }, [refreshCart]);
 
   const withBusy = async <T,>(fn: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true);
@@ -75,16 +63,14 @@ export default function App() {
     }
   };
 
-  const [checkoutHint, setCheckoutHint] = useState(false);
-
   const applyActions = useCallback(
-    async (actions: { type: string; payload: Record<string, unknown> }[], cartId: string) => {
+    async (actions: { type: string; payload: Record<string, unknown> }[]) => {
       for (const a of actions) {
         if (a.type === "SHOW_PRODUCTS") {
           const ids = (a.payload.product_ids as string[]) ?? [];
           if (ids.length) setProducts(await api.getProducts(ids).catch(() => []));
         } else if (a.type === "SHOW_CART" || a.type === "SHOW_CHECKOUT") {
-          await refreshCart(cartId);
+          await refreshCart();
         }
         if (a.type === "SHOW_CHECKOUT") setCheckoutHint(true);
         if (a.type === "SHOW_UPSELL") {
@@ -105,112 +91,78 @@ export default function App() {
   );
 
   const send = async (text: string) => {
-    if (!session) return;
     setMessages((m) => [...m, { role: "user", content: text }]);
-    const reply = await withBusy(() => api.chat(session.session_id, text));
+    const reply = await withBusy(() => api.chat(text));
     if (!reply) return;
     setMessages((m) => [
       ...m,
       ...(reply.tool_calls.length ? [{ role: "tool" as const, content: reply.tool_calls.join(", ") }] : []),
       { role: "assistant", content: reply.message },
     ]);
-    await applyActions(reply.actions, session.cart_id);
-    setSession(await api.getSession(session.session_id));
+    await applyActions(reply.actions);
+    await refreshSession();
   };
 
-  // ---- cart ops ----
   const addToCart = (p: Product) =>
     withBusy(async () => {
-      if (!session) return;
-      setCart(await api.addItem(session.cart_id, p.id, 1));
-      setSession(await api.getSession(session.session_id));
+      setCart(await api.addItem(p.id, 1));
+      await refreshSession();
     });
   const setQty = (productId: string, qty: number) =>
     withBusy(async () => {
-      if (!session) return;
-      setCart(qty <= 0 ? await api.removeItem(session.cart_id, productId) : await api.updateItem(session.cart_id, productId, qty));
+      setCart(qty <= 0 ? await api.removeItem(productId) : await api.updateItem(productId, qty));
     });
-  const removeItem = (productId: string) =>
-    withBusy(async () => {
-      if (!session) return;
-      setCart(await api.removeItem(session.cart_id, productId));
-    });
+  const removeItem = (productId: string) => withBusy(async () => setCart(await api.removeItem(productId)));
 
-  // ---- upsell ----
   const acceptUpsell = () =>
     withBusy(async () => {
-      if (!session || !upsell?.product) return;
-      await api.acceptUpsell(session.session_id);
-      setCart(await api.addItem(session.cart_id, upsell.product.id, 1));
+      if (!upsell?.product) return;
+      await api.acceptUpsell();
+      setCart(await api.addItem(upsell.product.id, 1));
       setUpsell(null);
-      setSession(await api.getSession(session.session_id));
-      if (review) setReview(await api.summary(session.session_id));
+      await refreshSession();
+      if (review) setReview(await api.summary());
     });
   const declineUpsell = () =>
     withBusy(async () => {
-      if (!session) return;
-      await api.declineUpsell(session.session_id);
+      await api.declineUpsell();
       setUpsell(null);
-      setSession(await api.getSession(session.session_id));
-      if (review) setReview(await api.summary(session.session_id));
+      await refreshSession();
+      if (review) setReview(await api.summary());
     });
 
-  // ---- checkout ----
   const openReview = async () => {
-    if (!session) return;
-    const r = await withBusy(() => api.review(session.session_id));
+    const r = await withBusy(() => api.review());
     if (!r) return;
     setReview(r);
     setPhase("review");
     setPayResult(null);
     setPaymentLinkUrl(null);
     setCheckoutHint(false);
-    // If an upsell is available and not yet shown, surface it in the panel.
     if (r.upsell_available && !upsell) {
-      const u = await api.upsell(session.session_id).catch(() => null);
+      const u = await api.upsell().catch(() => null);
       if (u?.available) setUpsell(u);
-      setReview(await api.summary(session.session_id));
+      setReview(await api.summary());
     }
   };
 
-  const startPayment = () =>
-    withBusy(async () => {
-      if (!session) return;
-      const confirmed = await api.confirm(session.session_id);
-      setOrder(confirmed.order);      setAttempts(await api.attempts(confirmed.order.order_id).catch(() => []));
-      if (!confirmed.payment) {
-        setError("Razorpay is not configured on the server. Use “Get payment link”.");
-        setPhase("result");
-        setPayResult({
-          success: false,
-          order_status: confirmed.order.status,
-          payment_status: "CREATED",
-          attempt_number: 0,
-          message: "Razorpay not configured — try the payment link fallback.",
-        });
-        return;
-      }
-      launchRazorpay(confirmed.payment, confirmed.order.order_id);
-    });
-
-  const launchRazorpay = (init: PaymentInit, orderId: string) => {
+  const launchRazorpay = (init: PaymentInit) => {
     setPhase("paying");
     openRazorpayCheckout({
       init,
       onSuccess: async (r) => {
         const res = await api.verifyPayment({
-          order_id: orderId,
           razorpay_order_id: r.razorpay_order_id,
           razorpay_payment_id: r.razorpay_payment_id,
           razorpay_signature: r.razorpay_signature,
         });
         setPayResult(res);
-        setAttempts(await api.attempts(orderId).catch(() => []));
+        setAttempts(await api.attempts().catch(() => []));
         setPhase("result");
-        if (res.success && session) setSession(await api.getSession(session.session_id));
+        if (res.success) await refreshSession();
       },
       onFailure: async (reason, paymentId) => {
-        const res = await api.reportFailure(orderId, reason, paymentId).catch(() => null);
+        const res = await api.reportFailure(reason, paymentId).catch(() => null);
         setPayResult(
           res ?? {
             success: false,
@@ -220,52 +172,70 @@ export default function App() {
             message: reason,
           },
         );
-        setAttempts(await api.attempts(orderId).catch(() => []));
+        setAttempts(await api.attempts().catch(() => []));
         setPhase("result");
+        await refreshSession();
       },
       onDismiss: () => setPhase("review"),
     });
   };
 
+  const startPayment = () =>
+    withBusy(async () => {
+      const confirmed = await api.confirm();
+      setAttempts(await api.attempts().catch(() => []));
+      if (!confirmed.payment) {
+        setPhase("result");
+        setPayResult({
+          success: false,
+          order_status: confirmed.order.status,
+          payment_status: "CREATED",
+          attempt_number: 0,
+          message: "Razorpay is not configured on the server — try the payment link.",
+        });
+        return;
+      }
+      launchRazorpay(confirmed.payment);
+    });
+
   const retryPayment = () =>
     withBusy(async () => {
-      if (!session) return;
-      const confirmed = await api.confirm(session.session_id); // idempotent
-      setOrder(confirmed.order);
-      if (confirmed.payment) {        launchRazorpay(confirmed.payment, confirmed.order.order_id);
-      }
+      const confirmed = await api.confirm();
+      if (confirmed.payment) launchRazorpay(confirmed.payment);
     });
 
   const getPaymentLink = () =>
     withBusy(async () => {
-      if (!order) return;
-      const link = await api.paymentLink(order.order_id);
+      const link = await api.paymentLink();
       setPaymentLinkUrl(link.short_url ?? null);
-      setAttempts(await api.attempts(order.order_id).catch(() => []));
-      if (link.short_url) window.open(link.short_url, "_blank");
+      setAttempts(await api.attempts().catch(() => []));
+      if (link.short_url) window.open(link.short_url, "_blank", "noopener,noreferrer");
     });
 
   const forceFailure = () =>
     withBusy(async () => {
-      if (!session) return;
-      const confirmed = await api.confirm(session.session_id);
-      setOrder(confirmed.order);
-      const res = await api.simulateFailure(confirmed.order.order_id);
+      await api.confirm();
+      const res = await api.simulateFailure();
       setPayResult(res);
-      setAttempts(await api.attempts(confirmed.order.order_id).catch(() => []));
+      setAttempts(await api.attempts().catch(() => []));
       setPhase("result");
+      await refreshSession();
     });
 
-  const closeCheckout = () => {
+  const closeCheckout = () =>
+    withBusy(async () => {
+      await api.cancelCheckout().catch(() => undefined);
+      setReview(null);
+      setPhase("review");
+      await refreshCart();
+      await refreshSession();
+    });
+
+  const finishCheckout = async () => {
     setReview(null);
     setPhase("review");
-  };
-  const finishCheckout = async () => {
-    closeCheckout();
-    if (session) {
-      await refreshCart(session.cart_id);
-      setSession(await api.getSession(session.session_id));
-    }
+    await refreshCart();
+    await refreshSession();
     setMessages((m) => [...m, { role: "assistant", content: "🎉 Payment complete — your order is confirmed." }]);
   };
 
@@ -292,7 +262,7 @@ export default function App() {
         <button
           className="ghost"
           onClick={() => {
-            localStorage.removeItem(SESSION_KEY);
+            api.resetSession();
             location.reload();
           }}
         >
@@ -300,9 +270,7 @@ export default function App() {
         </button>
       </div>
 
-      {error && (
-        <div style={{ padding: "8px 16px", color: "var(--err)", fontSize: 13 }}>{error}</div>
-      )}
+      {error && <div style={{ padding: "8px 16px", color: "var(--err)", fontSize: 13 }}>{error}</div>}
 
       <div className="layout">
         <ChatPanel messages={messages} busy={busy} onSend={send} />
@@ -321,13 +289,7 @@ export default function App() {
             {showUpsellPanel && upsell && (
               <UpsellCard upsell={upsell} busy={busy} onAccept={acceptUpsell} onDecline={declineUpsell} />
             )}
-            <CartPanel
-              cart={cart}
-              busy={busy}
-              onQty={setQty}
-              onRemove={removeItem}
-              onReview={openReview}
-            />
+            <CartPanel cart={cart} busy={busy} onQty={setQty} onRemove={removeItem} onReview={openReview} />
             <section className="block">
               <div className="block-title">🛍️ Results</div>
               <ProductGrid products={products} onAdd={addToCart} busy={busy} />
@@ -354,9 +316,7 @@ export default function App() {
         />
       )}
 
-      {auditOpen && session && (
-        <AuditDrawer sessionId={session.session_id} onClose={() => setAuditOpen(false)} />
-      )}
+      {auditOpen && <AuditDrawer onClose={() => setAuditOpen(false)} />}
     </div>
   );
 }

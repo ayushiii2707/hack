@@ -39,7 +39,7 @@ class CartOut(BaseModel):
     totals: CartTotalsOut
 
     @classmethod
-    def build(cls, cart: Cart, breakdown: PriceBreakdown) -> "CartOut":
+    def build(cls, cart: Cart, breakdown: PriceBreakdown) -> CartOut:
         items = [
             CartLineOut(
                 product_id=li.product_id,

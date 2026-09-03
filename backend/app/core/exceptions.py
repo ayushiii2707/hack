@@ -143,3 +143,39 @@ class ExternalProviderError(AppError):
 
     code = "EXTERNAL_PROVIDER_ERROR"
     status_code = 502
+
+
+# --- auth / abuse ---
+class AuthenticationError(AppError):
+    """A valid session credential is required."""
+
+    code = "AUTHENTICATION_REQUIRED"
+    status_code = 401
+
+
+class ForbiddenError(AppError):
+    """You do not have access to this resource."""
+
+    code = "FORBIDDEN"
+    status_code = 403
+
+
+class RateLimitedError(AppError):
+    """Too many requests. Slow down."""
+
+    code = "RATE_LIMITED"
+    status_code = 429
+
+
+class ConflictError(AppError):
+    """The request conflicts with the current state of the resource."""
+
+    code = "CONFLICT"
+    status_code = 409
+
+
+class LLMUnavailableError(AppError):
+    """The conversational model is not available."""
+
+    code = "LLM_UNAVAILABLE"
+    status_code = 503

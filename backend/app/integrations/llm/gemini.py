@@ -24,5 +24,6 @@ def get_chat_model():
         model=settings.gemini_model,
         google_api_key=settings.gemini_api_key,
         temperature=0.2,
-        max_retries=2,
+        max_retries=1,
+        timeout=settings.gemini_timeout_seconds,
     )

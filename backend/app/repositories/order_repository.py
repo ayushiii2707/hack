@@ -5,13 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.constants import OrderStatus
-from app.models.order import Order
+from app.models.order import OPEN_ORDER_STATUSES, Order
 
-OPEN_ORDER_STATUSES = (
-    OrderStatus.CREATED,
-    OrderStatus.PAYMENT_PENDING,
-    OrderStatus.PAYMENT_FAILED,
-)
+_TERMINAL = (OrderStatus.PAID, OrderStatus.CANCELLED)
 
 
 class OrderRepository:
@@ -33,6 +29,7 @@ class OrderRepository:
         order = Order(
             session_id=session_id,
             cart_id=cart_id,
+            open_cart_key=cart_id,  # UNIQUE -> at most one open order per cart
             amount=amount,
             subtotal=subtotal,
             shipping=shipping,
@@ -56,7 +53,14 @@ class OrderRepository:
     def get_open_for_cart(self, cart_id: str) -> Order | None:
         return self.db.execute(
             select(Order)
-            .where(Order.cart_id == cart_id, Order.status.in_(OPEN_ORDER_STATUSES))
+            .where(Order.cart_id == cart_id, Order.status.in_(tuple(OPEN_ORDER_STATUSES)))
+            .order_by(Order.created_at.desc())
+        ).scalars().first()
+
+    def get_open_for_session(self, session_id: str) -> Order | None:
+        return self.db.execute(
+            select(Order)
+            .where(Order.session_id == session_id, Order.status.in_(tuple(OPEN_ORDER_STATUSES)))
             .order_by(Order.created_at.desc())
         ).scalars().first()
 
@@ -69,6 +73,8 @@ class OrderRepository:
 
     def set_status(self, order: Order, status: OrderStatus) -> None:
         order.status = status
+        # Release the "one open order per cart" slot on any terminal transition.
+        order.open_cart_key = None if status in _TERMINAL else order.cart_id
         self.db.flush()
 
     def set_razorpay_order_id(self, order: Order, razorpay_order_id: str) -> None:

@@ -12,3 +12,20 @@ filterwarnings = ["ignore::DeprecationWarning"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "RUF"]
+ignore = [
+    "B008",   # FastAPI Depends() in defaults is the idiomatic pattern
+    "E501",   # long lines are handled by the formatter, not fatal
+    "UP017",  # datetime.timezone.utc is fine and clearer
+    "B904",   # explicit re-raise style is a matter of taste here
+    "RUF001", "RUF002", "RUF003",  # en-dashes in prose/docstrings are intentional
+    "RUF012", # mutable class attrs on SQLAlchemy models are fine
+    "RUF015", # list[0] over next() – readability preference
+    "UP042",  # str, Enum is deliberate (stable stored values); not switching to StrEnum
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "E402", "F401", "RUF059", "RUF001", "RUF002", "RUF003"]
+"migrations/*" = ["E402", "F401", "UP", "I"]

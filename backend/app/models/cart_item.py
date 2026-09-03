@@ -5,7 +5,7 @@ pricing stays deterministic even if the catalog price later changes.
 """
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -16,6 +16,8 @@ class CartItem(Base, TimestampMixin):
     __tablename__ = "cart_items"
     __table_args__ = (
         UniqueConstraint("cart_id", "product_id", name="uq_cart_item_cart_product"),
+        CheckConstraint("quantity >= 1", name="ck_cart_item_qty_pos"),
+        CheckConstraint("unit_price >= 0", name="ck_cart_item_price_nonneg"),
     )
 
     id: Mapped[str] = mapped_column(String(48), primary_key=True, default=cart_item_id)

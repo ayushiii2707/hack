@@ -13,6 +13,7 @@ class AuditEntryOut(BaseModel):
     id: str
     session_id: str | None
     order_id: str | None
+    request_id: str | None
     actor: str
     action: str
     reason: str
@@ -20,15 +21,16 @@ class AuditEntryOut(BaseModel):
     created_at: str | None
 
     @classmethod
-    def from_model(cls, a: AuditLog) -> "AuditEntryOut":
+    def from_model(cls, a: AuditLog) -> AuditEntryOut:
         try:
             meta = json.loads(a.meta) if a.meta else {}
         except (ValueError, TypeError):
             meta = {}
         return cls(
             id=a.id,
-            session_id=a.session_id,
+            session_id=a.session_ref or a.session_id,
             order_id=a.order_id,
+            request_id=a.request_id,
             actor=a.actor.value,
             action=a.action.value,
             reason=a.reason,

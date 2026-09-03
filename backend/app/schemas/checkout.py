@@ -34,9 +34,10 @@ class CheckoutReviewOut(BaseModel):
     upsell_pending: bool
     issues: list[dict]
     ready_for_payment: bool
+    has_open_order: bool = False
 
     @classmethod
-    def from_review(cls, r: CheckoutReview) -> "CheckoutReviewOut":
+    def from_review(cls, r: CheckoutReview) -> CheckoutReviewOut:
         b = r.breakdown
         items = [
             CartLineOut(
@@ -59,6 +60,7 @@ class CheckoutReviewOut(BaseModel):
             upsell_pending=r.upsell_pending,
             issues=r.issues,
             ready_for_payment=(not r.issues and not r.upsell_pending and b.total > 0),
+            has_open_order=r.has_open_order,
         )
 
 
@@ -77,7 +79,7 @@ class OrderOut(BaseModel):
     receipt: str | None = None
 
     @classmethod
-    def from_model(cls, o: Order) -> "OrderOut":
+    def from_model(cls, o: Order) -> OrderOut:
         return cls(
             order_id=o.id,
             session_id=o.session_id,

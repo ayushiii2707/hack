@@ -42,6 +42,15 @@ def _first_str(value, default: str = "") -> str:
     return str(value)
 
 
+def _safe_url(value: str) -> str:
+    """Only allow http/https URLs from the external feed; drop anything else
+    (javascript:, data:, file:, ...) so it can never reach the frontend."""
+    v = (value or "").strip()
+    if v[:7].lower() == "http://" or v[:8].lower() == "https://":
+        return v[:1024]
+    return ""
+
+
 def normalize(raw: RawProduct) -> NormalizedProduct:
     p = raw.payload
     external_id = str(p.get("id") or raw.external_id or "").strip()
@@ -74,8 +83,8 @@ def normalize(raw: RawProduct) -> NormalizedProduct:
         brand=str(p.get("brand") or "").strip(),
         price=price_paise,
         currency=DEFAULT_CURRENCY,
-        image_url=_first_str(p.get("images")) or str(p.get("thumbnail") or ""),
-        product_url=str(p.get("product_url") or ""),
+        image_url=_safe_url(_first_str(p.get("images")) or str(p.get("thumbnail") or "")),
+        product_url=_safe_url(str(p.get("product_url") or "")),
         stock=max(0, int(p.get("stock") or 0)),
         sku=str(p.get("sku") or "").strip(),
         tags=tags,

@@ -21,10 +21,13 @@ class AuditRepository:
         meta_json: str,
         session_id: str | None = None,
         order_id: str | None = None,
+        request_id: str | None = None,
     ) -> AuditLog:
         entry = AuditLog(
             session_id=session_id,
+            session_ref=session_id,
             order_id=order_id,
+            request_id=request_id,
             actor=actor,
             action=action,
             reason=reason,
@@ -44,7 +47,7 @@ class AuditRepository:
     ) -> list[AuditLog]:
         stmt = select(AuditLog)
         if session_id:
-            stmt = stmt.where(AuditLog.session_id == session_id)
+            stmt = stmt.where(AuditLog.session_ref == session_id)
         if order_id:
             stmt = stmt.where(AuditLog.order_id == order_id)
         stmt = stmt.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())

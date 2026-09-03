@@ -7,7 +7,6 @@ from app.agent.agent import AgentResponse
 
 
 class AgentChatIn(BaseModel):
-    session_id: str = Field(..., min_length=3)
     message: str = Field(..., min_length=1, max_length=2000)
 
 
@@ -23,7 +22,7 @@ class AgentChatOut(BaseModel):
     tool_calls: list[str]
 
     @classmethod
-    def from_response(cls, r: AgentResponse) -> "AgentChatOut":
+    def from_response(cls, r: AgentResponse) -> AgentChatOut:
         return cls(
             message=r.message,
             state=r.state,

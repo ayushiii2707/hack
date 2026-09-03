@@ -18,7 +18,7 @@ class UpsellOut(BaseModel):
     breakdown: dict | None = None
 
     @classmethod
-    def from_reco(cls, reco: Recommendation | None) -> "UpsellOut":
+    def from_reco(cls, reco: Recommendation | None) -> UpsellOut:
         if reco is None:
             return cls(available=False)
         return cls(
