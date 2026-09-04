@@ -104,8 +104,24 @@ class PaymentService:
             cart.status = CartStatus.COMPLETED
             self.db.flush()
 
-    def _mark_paid(self, order: Order, *, source: str, gateway_amount: int | None) -> None:
-        self.orders.set_status(order, OrderStatus.PAID)  # also nulls open_cart_key
+    def _mark_paid(self, order: Order, *, source: str, gateway_amount: int | None) -> bool:
+        """Atomically flip an OPEN order to PAID. Returns False if the order was
+        cancelled by a racing request in the meantime (money moved against a
+        cancelled order -> needs a refund, flagged for reconciliation)."""
+        if not self.orders.try_close_open_order(order.id, OrderStatus.PAID):
+            self.db.refresh(order)
+            self.audit.log_payment_event(
+                action=AuditAction.PAYMENT_VERIFICATION_FAILED,
+                reason=(
+                    f"Payment captured ({source}) for an order that is no longer open "
+                    f"(status {order.status.value}); manual reconciliation required."
+                ),
+                order_id=order.id, session_id=order.session_id,
+                actor=AuditActor.PAYMENT_PROVIDER,
+                metadata={"source": source, "gateway_amount": gateway_amount},
+            )
+            return False
+        self.db.refresh(order)
         self._advance_session(order, SessionState.COMPLETED)
         self._complete_cart(order)
         self.audit.log_payment_event(
@@ -116,6 +132,7 @@ class PaymentService:
             actor=AuditActor.PAYMENT_PROVIDER,
             metadata={"source": source, "gateway_amount": gateway_amount, "amount": order.amount},
         )
+        return True
 
     # ---------------------------------------------------------------- order
     def ensure_payment_order(self, order: Order) -> dict:
@@ -263,7 +280,7 @@ class PaymentService:
                 captured_payment_key=razorpay_payment_id,
                 settled_amount=int(gp.amount) if gp.amount is not None else order.amount,
             )
-            self._mark_paid(order, source="checkout-verify", gateway_amount=gp.amount)
+            marked = self._mark_paid(order, source="checkout-verify", gateway_amount=gp.amount)
             self.db.commit()
         except IntegrityError:
             self.db.rollback()
@@ -276,6 +293,12 @@ class PaymentService:
                 "Payment already verified (concurrent).",
             )
 
+        if not marked:
+            self.db.refresh(order)
+            return VerifyResult(
+                False, order.status.value, PaymentStatus.CAPTURED.value, payment.attempt_number,
+                "Payment was captured but the order is no longer open; our team will reconcile it.",
+            )
         return VerifyResult(
             True, OrderStatus.PAID.value, PaymentStatus.CAPTURED.value,
             payment.attempt_number, "Payment verified.",
@@ -291,15 +314,29 @@ class PaymentService:
         """
         if order.status == OrderStatus.PAID or self.payments.get_captured(order.id):
             raise ConflictError("This order is already paid.")
+
+        # Idempotent: if the order is already failed and the newest attempt is a
+        # terminal FAILED with nothing since, don't stack another attempt row.
+        latest = self.payments.latest_for_order(order.id)
+        if (
+            order.status == OrderStatus.PAYMENT_FAILED
+            and latest is not None
+            and latest.status == PaymentStatus.FAILED
+        ):
+            return VerifyResult(
+                False, order.status.value, PaymentStatus.FAILED.value,
+                latest.attempt_number, "Payment failure already recorded.",
+            )
         try:
-            return self._fail(
+            result = self._fail(
                 order,
                 reason=f"Client-reported failure: {reason}"[:500],
                 razorpay_payment_id=razorpay_payment_id,
                 actor=AuditActor.CUSTOMER,
             )
+            self.db.commit()
+            return result
         except IntegrityError:
-            # Concurrent duplicate report — the order is already marked failed.
             self.db.rollback()
             self.db.refresh(order)
             latest = self.payments.latest_for_order(order.id)
@@ -322,10 +359,12 @@ class PaymentService:
         order = self._get_order(order_id)
         if order.status == OrderStatus.PAID:
             raise PaymentError("Order is already paid; cannot mark it failed.")
-        return self._fail(
+        result = self._fail(
             order, reason=reason, razorpay_payment_id=razorpay_payment_id,
             error_code=error_code, actor=actor,
         )
+        self.db.commit()
+        return result
 
     def _fail(
         self,
@@ -358,7 +397,7 @@ class PaymentService:
             order_id=order.id, session_id=order.session_id, actor=actor,
             metadata={"attempt_number": payment.attempt_number, "error_code": error_code},
         )
-        self.db.commit()
+        # NB: the caller commits (webhook path bundles the event-dedupe row).
         return VerifyResult(
             False, OrderStatus.PAYMENT_FAILED.value, PaymentStatus.FAILED.value,
             payment.attempt_number, reason,
@@ -414,21 +453,24 @@ class PaymentService:
         }
 
     # ---------------------------------------------------------------- webhook
-    def _dedupe_event(self, event_id: str | None, event_type: str) -> bool:
-        """Return True if this event id was already processed (DB-enforced)."""
-        if not event_id:
-            return False
+    def _already_processed(self, event_id: str | None) -> bool:
+        return bool(event_id) and self.db.get(WebhookEvent, event_id) is not None
+
+    def _finish_webhook(self, event_id: str | None, etype: str, result: dict) -> dict:
+        """Record the event id + commit atomically with the effects. A concurrent
+        duplicate loses the PK race and is reported idempotent."""
+        if event_id:
+            self.db.add(WebhookEvent(id=event_id, event_type=etype[:64], result=str(result)[:256]))
         try:
-            self.db.add(WebhookEvent(id=event_id, event_type=event_type))
-            self.db.flush()
-            return False
+            self.db.commit()
         except IntegrityError:
             self.db.rollback()
-            return True
+            return {"handled": True, "idempotent": True}
+        return result
 
     def handle_webhook_event(self, event: dict, *, event_id: str | None = None) -> dict:
         etype = event.get("event", "")
-        if self._dedupe_event(event_id, etype):
+        if self._already_processed(event_id):
             return {"handled": True, "idempotent": True}
 
         payload = event.get("payload", {}) or {}
@@ -445,25 +487,26 @@ class PaymentService:
             self.orders.get_by_razorpay_id(razorpay_order_id) if razorpay_order_id else None
         )
         if order is None:
-            self.db.commit()  # keep the dedupe row
+            # Do NOT record the event: it may just be racing ahead of our own
+            # order commit. Razorpay will retry (same event id) and we reprocess.
+            self.db.rollback()
             return {"handled": False, "reason": "unknown order"}
 
         if order.status == OrderStatus.CANCELLED:
-            # Money moved against an order the customer cancelled -> needs a human
-            # (refund). Never auto-resurrect it.
             self.audit.log_payment_event(
                 action=AuditAction.PAYMENT_VERIFICATION_FAILED,
                 reason=f"Webhook {etype} for a CANCELLED order; manual reconciliation required.",
                 order_id=order.id, session_id=order.session_id,
                 actor=AuditActor.PAYMENT_PROVIDER, metadata={"event": etype},
             )
-            self.db.commit()
-            return {"handled": True, "needs_reconciliation": True}
+            return self._finish_webhook(event_id, etype, {"handled": True, "needs_reconciliation": True})
 
         if etype in ("payment.captured", "order.paid"):
             if order.status == OrderStatus.PAID or self.payments.get_captured(order.id):
-                self.db.commit()
-                return {"handled": True, "idempotent": True, "order_status": order.status.value}
+                return self._finish_webhook(
+                    event_id, etype,
+                    {"handled": True, "idempotent": True, "order_status": order.status.value},
+                )
 
             problems: list[str] = []
             if entity_amount is not None and int(entity_amount) != order.amount:
@@ -486,8 +529,10 @@ class PaymentService:
                     actor=AuditActor.PAYMENT_PROVIDER,
                     metadata={"event": etype, "problems": problems},
                 )
-                self.db.commit()
-                return {"handled": True, "rejected": True, "reason": "reconciliation failed"}
+                return self._finish_webhook(
+                    event_id, etype,
+                    {"handled": True, "rejected": True, "reason": "reconciliation failed"},
+                )
 
             payment = self.payments.create_attempt(order_id=order.id, status=PaymentStatus.ATTEMPTED)
             try:
@@ -498,21 +543,27 @@ class PaymentService:
                     captured_payment_key=razorpay_payment_id or f"wh-{order.id}",
                     settled_amount=int(entity_amount) if entity_amount is not None else order.amount,
                 )
-                self._mark_paid(order, source=f"webhook:{etype}", gateway_amount=entity_amount)
-                self.db.commit()
+                marked = self._mark_paid(order, source=f"webhook:{etype}", gateway_amount=entity_amount)
             except IntegrityError:
                 self.db.rollback()
                 return {"handled": True, "idempotent": True}
-            return {"handled": True, "order_status": OrderStatus.PAID.value}
+            if not marked:
+                return self._finish_webhook(
+                    event_id, etype, {"handled": True, "needs_reconciliation": True}
+                )
+            return self._finish_webhook(
+                event_id, etype, {"handled": True, "order_status": OrderStatus.PAID.value}
+            )
 
         if etype == "payment.failed":
             if order.status == OrderStatus.PAID or self.payments.get_captured(order.id):
-                self.db.commit()
-                return {"handled": True, "idempotent": True}
-            existing_failed = self.payments.get_by_razorpay_payment_id(razorpay_payment_id) if razorpay_payment_id else None
+                return self._finish_webhook(event_id, etype, {"handled": True, "idempotent": True})
+            existing_failed = (
+                self.payments.get_by_razorpay_payment_id(razorpay_payment_id)
+                if razorpay_payment_id else None
+            )
             if existing_failed and existing_failed.status == PaymentStatus.FAILED:
-                self.db.commit()
-                return {"handled": True, "idempotent": True}
+                return self._finish_webhook(event_id, etype, {"handled": True, "idempotent": True})
             self._fail(
                 order,
                 reason=f"Webhook payment.failed: {pay_entity.get('error_description', 'payment failed')}",
@@ -520,10 +571,15 @@ class PaymentService:
                 error_code=pay_entity.get("error_code"),
                 actor=AuditActor.PAYMENT_PROVIDER,
             )
-            return {"handled": True, "order_status": OrderStatus.PAYMENT_FAILED.value}
+            return self._finish_webhook(
+                event_id, etype,
+                {"handled": True, "order_status": OrderStatus.PAYMENT_FAILED.value},
+            )
 
-        self.db.commit()
-        return {"handled": False, "reason": f"ignored event {etype}"}
+        # Unrecognised event type — record it so retries stop, but take no action.
+        return self._finish_webhook(
+            event_id, etype, {"handled": False, "reason": f"ignored event {etype}"}
+        )
 
     # ---------------------------------------------------------------- reads
     def get_payment(self, payment_id: str) -> Payment:

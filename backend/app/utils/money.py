@@ -6,12 +6,22 @@ order total or a payment amount.
 """
 from __future__ import annotations
 
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 
 def rupees_to_paise(rupees: float | int | str) -> int:
-    """Convert a rupee amount to integer paise using banker-safe rounding."""
-    value = (Decimal(str(rupees)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    """Convert a rupee amount to integer paise using banker-safe rounding.
+
+    Rejects non-finite / non-numeric input (raises ValueError) so a poisoned
+    external price can never produce a bogus amount or crash a caller.
+    """
+    try:
+        dec = Decimal(str(rupees))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"not a valid monetary amount: {rupees!r}") from exc
+    if not dec.is_finite():
+        raise ValueError(f"non-finite monetary amount: {rupees!r}")
+    value = (dec * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     return int(value)
 
 

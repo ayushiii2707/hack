@@ -5,6 +5,7 @@ external API schema drift.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from app.core.config import settings
@@ -61,9 +62,18 @@ def normalize(raw: RawProduct) -> NormalizedProduct:
     raw_price = p.get("price")
     if raw_price is None:
         raise NormalizationError(f"missing price for {raw.source}:{external_id}")
-    price_paise = rupees_to_paise(float(raw_price) * settings.catalog_price_multiplier)
-    if price_paise <= 0:
-        raise NormalizationError(f"non-positive price for {raw.source}:{external_id}")
+    try:
+        price_units = float(raw_price)
+    except (TypeError, ValueError):
+        raise NormalizationError(f"non-numeric price {raw_price!r} for {raw.source}:{external_id}")
+    if not math.isfinite(price_units) or not 0 < price_units < 1_000_000:
+        raise NormalizationError(f"price out of range ({raw_price!r}) for {raw.source}:{external_id}")
+    try:
+        price_paise = rupees_to_paise(price_units * settings.catalog_price_multiplier)
+    except (ArithmeticError, ValueError):
+        raise NormalizationError(f"unrepresentable price for {raw.source}:{external_id}")
+    if not 0 < price_paise < 10**12:
+        raise NormalizationError(f"non-positive/oversized price for {raw.source}:{external_id}")
 
     tags = p.get("tags") or []
     if not isinstance(tags, list):

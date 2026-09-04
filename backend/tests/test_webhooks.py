@@ -101,6 +101,41 @@ def test_webhook_on_cancelled_order_never_resurrects_it(db_session, shop, fake_r
     assert o.status == OrderStatus.CANCELLED  # not PAID
 
 
+def test_unknown_order_webhook_is_reprocessable_on_retry(db_session, order, fake_rzp):
+    """An event that raced ahead of our own order commit must NOT be permanently
+    deduped: a retry with the same event id must still process it."""
+    s = _svc(db_session, fake_rzp)
+    init = s.ensure_payment_order(order)
+    pid, _ = fake_rzp.simulate_success(init["razorpay_order_id"])
+
+    # first delivery: our lookup can't find the order yet
+    r1 = s.handle_webhook_event(
+        _captured_event("order_NOT_YET_KNOWN", pid, order.amount), event_id="retry-evt"
+    )
+    assert r1["handled"] is False
+    # retry (same event id), now resolvable
+    r2 = s.handle_webhook_event(
+        _captured_event(init["razorpay_order_id"], pid, order.amount), event_id="retry-evt"
+    )
+    assert r2["order_status"] == "PAID"
+    db_session.refresh(order)
+    assert order.status == OrderStatus.PAID
+
+
+def test_reconciliation_rejected_event_does_not_block_a_later_good_event(db_session, order, fake_rzp):
+    s = _svc(db_session, fake_rzp)
+    init = s.ensure_payment_order(order)
+    pid, _ = fake_rzp.simulate_success(init["razorpay_order_id"])
+    bad = s.handle_webhook_event(
+        _captured_event(init["razorpay_order_id"], pid, order.amount - 7), event_id="bad"
+    )
+    assert bad.get("rejected") is True
+    good = s.handle_webhook_event(
+        _captured_event(init["razorpay_order_id"], pid, order.amount), event_id="good"
+    )
+    assert good["order_status"] == "PAID"
+
+
 def test_order_paid_event_payload_shape_handled(db_session, order, fake_rzp):
     s = _svc(db_session, fake_rzp)
     init = s.ensure_payment_order(order)

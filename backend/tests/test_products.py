@@ -21,6 +21,25 @@ def test_normalizer_rejects_missing_price():
         normalize(RawProduct(source="fake", external_id="1", payload={"id": 1, "title": "X"}))
 
 
+@pytest.mark.parametrize("bad", [
+    {"id": "b1", "title": "X", "price": float("inf")},
+    {"id": "b2", "title": "Y", "price": float("nan")},
+    {"id": "b3", "title": "Z", "price": "not a number"},
+    {"id": "b4", "title": "W", "price": 1e15},
+    {"id": "b5", "title": "V", "price": -3.0},
+])
+def test_normalizer_rejects_poisoned_prices_without_crashing(bad):
+    with pytest.raises(NormalizationError):
+        normalize(RawProduct(source="fake", external_id=str(bad["id"]), payload=bad))
+
+
+def test_sync_skips_one_poisoned_row_and_continues(db_session):
+    catalog = [*sample_catalog(), {"id": 999, "title": "Poison", "price": float("inf")}]
+    r = sync_catalog(db_session, provider=FakeCatalogProvider(catalog), limit=100)
+    assert r.created == 3  # the 3 valid rows still synced
+    assert r.skipped == 2  # the None-price row + the inf-price row
+
+
 def test_normalizer_drops_unsafe_urls():
     raw = RawProduct(source="fake", external_id="1", payload={
         "id": 1, "title": "X", "price": 5.0,

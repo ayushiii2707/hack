@@ -1,13 +1,14 @@
 """Order persistence."""
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.constants import OrderStatus
 from app.models.order import OPEN_ORDER_STATUSES, Order
 
 _TERMINAL = (OrderStatus.PAID, OrderStatus.CANCELLED)
+_OPEN = tuple(s.value for s in OPEN_ORDER_STATUSES)
 
 
 class OrderRepository:
@@ -76,6 +77,17 @@ class OrderRepository:
         # Release the "one open order per cart" slot on any terminal transition.
         order.open_cart_key = None if status in _TERMINAL else order.cart_id
         self.db.flush()
+
+    def try_close_open_order(self, order_id: str, new_status: OrderStatus) -> bool:
+        """Atomically move an OPEN order to a terminal state. Returns False if
+        the order is no longer open (already paid/cancelled by a racing request)."""
+        result = self.db.execute(
+            update(Order)
+            .where(Order.id == order_id, Order.status.in_(_OPEN))
+            .values(status=new_status, open_cart_key=None)
+        )
+        self.db.flush()
+        return (result.rowcount or 0) == 1
 
     def set_razorpay_order_id(self, order: Order, razorpay_order_id: str) -> None:
         order.razorpay_order_id = razorpay_order_id

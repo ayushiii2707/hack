@@ -17,4 +17,4 @@ class WebhookEvent(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(128), primary_key=True)  # provider event id
     provider: Mapped[str] = mapped_column(String(24), default="razorpay", nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), default="", nullable=False)
-    result: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    result: Mapped[str] = mapped_column(String(256), default="", nullable=False)

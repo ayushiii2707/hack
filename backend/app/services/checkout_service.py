@@ -205,8 +205,17 @@ class CheckoutService:
                 self.carts.repo.set_status(cart, CartStatus.ACTIVE)
                 self.db.commit()
             return
-        if order.status == OrderStatus.PAID:
-            raise ConflictError("This order is already paid and cannot be cancelled here.")
+        from app.repositories.payment_repository import PaymentRepository
+
+        if order.status == OrderStatus.PAID or PaymentRepository(self.db).has_captured(order.id):
+            raise ConflictError("This order has been paid and cannot be cancelled here.")
+
+        # Atomically claim the open->CANCELLED transition. If we lose the race to
+        # a concurrent capture, back off and do NOT release the (now sold) stock.
+        if not self.orders.try_close_open_order(order.id, OrderStatus.CANCELLED):
+            self.db.rollback()
+            raise ConflictError("This order was just paid and can no longer be cancelled.")
+        self.db.refresh(order)  # ORM object now reflects the CANCELLED status
 
         if order.stock_reserved:
             cart = self.carts.repo.get(order.cart_id)
@@ -215,7 +224,6 @@ class CheckoutService:
                     self.products.increment_stock(item.product_id, item.quantity)
             order.stock_reserved = False
 
-        self.orders.set_status(order, OrderStatus.CANCELLED)
         cart = self.carts.repo.get(order.cart_id)
         if cart is not None:
             self.carts.repo.set_status(cart, CartStatus.ACTIVE)

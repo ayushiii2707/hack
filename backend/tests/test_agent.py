@@ -53,7 +53,7 @@ def test_agent_cannot_exceed_quantity_cap(db_session, session_obj):
 def test_agent_has_no_payment_tool(db_session, session_obj):
     from app.agent.tools import ToolContext, build_tools
 
-    ctx = ToolContext(db=db_session, session_id=session_obj.id, cart_id=session_obj.cart.id)
+    ctx = ToolContext(db=db_session, session_id=session_obj.id)
     names = {t.name for t in build_tools(ctx)}
     assert names == {
         "search_products", "get_product", "add_to_cart", "update_cart_quantity",

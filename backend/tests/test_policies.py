@@ -22,7 +22,7 @@ def session_obj(shop):
 
 
 def _tools(db_session, session_obj):
-    ctx = ToolContext(db=db_session, session_id=session_obj.id, cart_id=session_obj.cart.id)
+    ctx = ToolContext(db=db_session, session_id=session_obj.id)
     return {t.name: t for t in build_tools(ctx)}, ctx
 
 
@@ -54,6 +54,25 @@ def test_no_payment_capability_in_policy_engine(db_session, session_obj):
     pe = PolicyEngine(db_session, session_obj.id)
     assert pe.can_create_payment().allowed is False
     assert pe.can_retry_payment().allowed is False
+
+
+def test_tools_always_act_on_their_own_sessions_cart(db_session):
+    """Even when a ToolContext is constructed directly, tools derive the cart
+    from session_id — they cannot be pointed at another session's cart."""
+    from app.services.session_service import SessionService
+
+    a = SessionService(db_session).create_session().session
+    b = SessionService(db_session).create_session().session
+    p = make_product(db_session, price=100000, stock=10)
+
+    a_tools = {t.name: t for t in build_tools(ToolContext(db=db_session, session_id=a.id))}
+    json.loads(a_tools["add_to_cart"].invoke({"product_id": p.id, "quantity": 2}))
+
+    b_tools = {t.name: t for t in build_tools(ToolContext(db=db_session, session_id=b.id))}
+    b_cart = json.loads(b_tools["get_cart"].invoke({}))
+    assert b_cart["cart"]["items"] == []  # session B's cart is untouched
+    a_cart = json.loads(a_tools["get_cart"].invoke({}))
+    assert a_cart["cart"]["items"][0]["quantity"] == 2
 
 
 def test_second_upsell_via_tool_blocked(db_session, session_obj):

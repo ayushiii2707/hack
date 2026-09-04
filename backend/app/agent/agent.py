@@ -198,10 +198,10 @@ def run_agent(
     if session is None:
         raise SessionNotFoundError(f"Session {session_id} was not found.")
 
-    cart = CartService(db).get_cart_for_session(session_id)
+    CartService(db).get_cart_for_session(session_id)  # ensure the cart exists
     history = AgentState.load_history(session.chat_history)
 
-    ctx = ToolContext(db=db, session_id=session_id, cart_id=cart.id)
+    ctx = ToolContext(db=db, session_id=session_id)
     tools = build_tools(ctx)
 
     from app.core.config import settings

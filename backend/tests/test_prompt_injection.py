@@ -80,10 +80,24 @@ def test_injection_cannot_repeat_declined_upsell(db_session, session_obj):
     assert not any(a.type == "SHOW_UPSELL" for a in resp.actions)
 
 
+def test_injection_non_finite_price_filter_is_handled(db_session, session_obj):
+    """An LLM tool call with max_price_rupees = inf / huge must not crash."""
+    from app.agent.tools import ToolContext, build_tools
+
+    make_product(db_session, external_id="q", name="Cap", price=100000, stock=5)
+    tools = {t.name: t for t in build_tools(ToolContext(db=db_session, session_id=session_obj.id))}
+    # pydantic clamps lt=1e7, so 1e12 is rejected at the schema
+    with pytest.raises(Exception):
+        tools["search_products"].invoke({"query": "cap", "max_price_rupees": 1e12})
+    # a schema-passing but weird value still yields a clean structured result
+    out = tools["search_products"].invoke({"query": "cap", "max_price_rupees": 9_999_999})
+    assert '"ok": true' in out
+
+
 def test_injection_cannot_reach_database_or_razorpay(db_session, session_obj):
     from app.agent.tools import ToolContext, build_tools
 
-    ctx = ToolContext(db=db_session, session_id=session_obj.id, cart_id=session_obj.cart.id)
+    ctx = ToolContext(db=db_session, session_id=session_obj.id)
     tools = build_tools(ctx)
     src = " ".join(t.description for t in tools).lower()
     assert "sql" not in src and "database" not in src and "razorpay" not in src

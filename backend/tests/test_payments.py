@@ -111,6 +111,16 @@ def test_failed_attempt_persisted_then_retry_succeeds(db_session, order, fake_rz
     assert order.status == OrderStatus.PAID
 
 
+def test_repeated_client_failure_reports_are_idempotent(db_session, order, fake_rzp):
+    s = svc(db_session, fake_rzp)
+    s.ensure_payment_order(order)
+    for i in range(6):
+        s.record_client_failure(order=order, reason=f"retry {i}")
+        db_session.expire_all()
+        order = s._get_order(order.id)
+    assert len(s.list_attempts(order.id)) == 1  # not 6
+
+
 def test_terminal_attempt_is_immutable(db_session, order, fake_rzp):
     s = svc(db_session, fake_rzp)
     init = s.ensure_payment_order(order)

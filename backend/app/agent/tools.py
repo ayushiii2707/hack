@@ -43,9 +43,14 @@ class ToolInvocation:
 
 @dataclass
 class ToolContext:
+    """Everything the agent's tools may act on. The cart is derived from
+    ``session_id`` inside ``build_tools`` — the tools never trust a
+    caller-supplied cart id, so a tool cannot touch another session's cart even
+    when invoked directly.
+    """
+
     db: Session
     session_id: str
-    cart_id: str
     invocations: list[ToolInvocation] = field(default_factory=list)
 
     def record(self, name: str, ok: bool, result: dict) -> dict:
@@ -85,8 +90,11 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
     audit = AuditService(db)
     policy = PolicyEngine(db, ctx.session_id)
 
+    # Derived from the session — NOT accepted from the caller.
+    cart_id = carts.get_cart_for_session(ctx.session_id).id
+
     def _cart_payload() -> dict:
-        breakdown = pricing.get_price_breakdown(ctx.cart_id)
+        breakdown = pricing.get_price_breakdown(cart_id)
         return {
             "items": [
                 {
@@ -110,8 +118,11 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
         decision = policy.can_search_products()
         if not decision.allowed:
             return _err(ctx, "search_products", "POLICY_BLOCKED", decision.reason)
-        max_p = rupees_to_paise(max_price_rupees) if max_price_rupees else None
-        min_p = rupees_to_paise(min_price_rupees) if min_price_rupees else None
+        try:
+            max_p = rupees_to_paise(max_price_rupees) if max_price_rupees else None
+            min_p = rupees_to_paise(min_price_rupees) if min_price_rupees else None
+        except ValueError:
+            return _err(ctx, "search_products", "INVALID_QUANTITY", "Price filter is not a valid number.")
         found = products.search_products(
             query, category=category, min_price=min_p, max_price=max_p,
             limit=5,
@@ -144,7 +155,7 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
         if not decision.allowed:
             return _err(ctx, "add_to_cart", "POLICY_BLOCKED", decision.reason)
         try:
-            carts.add_item(ctx.cart_id, product_id, quantity, actor=AuditActor.AGENT)
+            carts.add_item(cart_id, product_id, quantity, actor=AuditActor.AGENT)
         except PolicyViolationError as exc:
             return _err(ctx, "add_to_cart", "POLICY_BLOCKED", exc.message)
         except AppError as exc:
@@ -157,7 +168,7 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
         if not decision.allowed:
             return _err(ctx, "update_cart_quantity", "POLICY_BLOCKED", decision.reason)
         try:
-            carts.update_quantity(ctx.cart_id, product_id, quantity, actor=AuditActor.AGENT)
+            carts.update_quantity(cart_id, product_id, quantity, actor=AuditActor.AGENT)
         except PolicyViolationError as exc:
             return _err(ctx, "update_cart_quantity", "POLICY_BLOCKED", exc.message)
         except AppError as exc:
@@ -170,7 +181,7 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
         if not decision.allowed:
             return _err(ctx, "remove_from_cart", "POLICY_BLOCKED", decision.reason)
         try:
-            carts.remove_item(ctx.cart_id, product_id, actor=AuditActor.AGENT)
+            carts.remove_item(cart_id, product_id, actor=AuditActor.AGENT)
         except AppError as exc:
             return _err(ctx, "remove_from_cart", exc.code, exc.message)
         return _ok(ctx, "remove_from_cart", {"cart": _cart_payload()})
@@ -181,7 +192,7 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
 
     # ---- calculate_total ----
     def calculate_total() -> str:
-        breakdown = pricing.get_price_breakdown(ctx.cart_id)
+        breakdown = pricing.get_price_breakdown(cart_id)
         return _ok(ctx, "calculate_total", {
             "subtotal": format_inr(breakdown.subtotal),
             "shipping": format_inr(breakdown.shipping),

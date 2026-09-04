@@ -25,4 +25,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:8000/health || exit 1
 
 # Migrate then serve. Uvicorn handles graceful shutdown on SIGTERM.
-CMD ["sh", "-c", "python -m alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2} --proxy-headers --forwarded-allow-ips='*'"]
+# NB: the in-process rate limiter is per-worker. With WEB_CONCURRENCY>1 the
+# effective limit is (workers * configured limit); enforce hard limits at the
+# reverse proxy / API gateway for multi-worker or multi-instance deployments.
+# --forwarded-allow-ips MUST be set to the actual proxy IP(s) in production,
+# not '*', so X-Forwarded-For (and thus the rate-limit key) can't be spoofed.
+CMD ["sh", "-c", "python -m alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-1} --proxy-headers --forwarded-allow-ips=\"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]

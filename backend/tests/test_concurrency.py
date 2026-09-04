@@ -150,6 +150,72 @@ def test_no_oversell_when_many_buyers_race_for_last_unit(Sf):
         assert ProductRepository(s).get_by_id(pid).stock == 0
 
 
+def test_cancel_vs_verify_race_never_leaves_inconsistent_state(Sf):
+    """A cancel racing a payment verification must resolve to exactly one of:
+      * PAID  -> stock stays reserved, capture recorded
+      * CANCELLED -> stock released; if a capture happened it is flagged for
+        manual reconciliation (never silently kept AND released)."""
+    import sys
+
+    sys.path.insert(0, "tests")
+    from factories import FakeRazorpayClient
+
+    from app.core.constants import PaymentStatus
+    from app.models.audit_log import AuditLog
+    from app.models.payment import Payment
+    from app.models.product import Product
+    from app.services.payment_service import PaymentService
+
+    fake = FakeRazorpayClient()
+    seen = {"PAID": 0, "CANCELLED": 0}
+    for trial in range(12):
+        with Sf() as s:
+            sid = SessionService(s).create_session().session.id
+            p = make_product(s, external_id=f"r{trial}", price=250000, stock=10)
+            pid = p.id
+            CartService(s).add_item(SessionService(s).get_session(sid).cart.id, pid, 1)
+            oid = CheckoutService(s).confirm_checkout(sid).id
+            rzp = PaymentService(s, client=fake).ensure_payment_order(
+                CheckoutService(s).get_order(oid)
+            )["razorpay_order_id"]
+        rpid, sig = fake.simulate_success(rzp)
+
+        def verify():
+            with Sf() as s:
+                try:
+                    PaymentService(s, client=fake).verify_payment(
+                        order=CheckoutService(s).get_order(oid),
+                        razorpay_order_id=rzp, razorpay_payment_id=rpid, razorpay_signature=sig)
+                except Exception:
+                    pass
+
+        def cancel():
+            with Sf() as s:
+                try:
+                    CheckoutService(s).cancel_checkout(sid)
+                except Exception:
+                    pass
+
+        with cf.ThreadPoolExecutor(2) as ex:
+            [f.result() for f in (ex.submit(verify), ex.submit(cancel))]
+
+        with Sf() as s:
+            o = CheckoutService(s).get_order(oid)
+            caps = s.query(Payment).filter_by(order_id=oid, status=PaymentStatus.CAPTURED).count()
+            stock = s.get(Product, pid).stock
+            flagged = s.query(AuditLog).filter(
+                AuditLog.order_id == oid, AuditLog.action == "PAYMENT_VERIFICATION_FAILED"
+            ).count()
+        seen[o.status.value] += 1
+        if o.status.value == "PAID":
+            assert caps == 1 and stock == 9
+        else:
+            assert o.status.value == "CANCELLED" and stock == 10
+            if caps == 1:
+                assert flagged >= 1  # capture-on-cancelled MUST be flagged
+    assert seen["PAID"] + seen["CANCELLED"] == 12
+
+
 def test_stock_restored_on_cancel_under_concurrency(Sf):
     with Sf() as s:
         p = make_product(s, price=100000, stock=5)

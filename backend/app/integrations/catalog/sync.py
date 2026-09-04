@@ -68,9 +68,10 @@ def sync_catalog(
             result.fetched += 1
             try:
                 norm = normalize(raw)
-            except NormalizationError as exc:
+            except (NormalizationError, ValueError, ArithmeticError) as exc:
+                # A poisoned/garbage row is skipped, never aborts the sync.
                 result.skipped += 1
-                result.errors.append(str(exc))
+                result.errors.append(f"{raw.external_id}: {exc}"[:200])
                 continue
             seen_external_ids.add(norm.external_id)
             _, created = repo.upsert(norm)
