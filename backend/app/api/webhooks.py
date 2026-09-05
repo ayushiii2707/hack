@@ -44,6 +44,7 @@ async def razorpay_webhook(
         )
     except PaymentVerificationError:
         log.warning("webhook rejected: bad signature")
+        _audit_rejected(db, "invalid signature", x_razorpay_event_id)
         return _json(400, {"status": "invalid_signature"})
     except Exception as exc:  # razorpay not constructible etc.
         log.error("webhook signature check errored: %s", exc)
@@ -52,6 +53,7 @@ async def razorpay_webhook(
     try:
         event = json.loads(body_str)
     except json.JSONDecodeError:
+        _audit_rejected(db, "malformed JSON body", x_razorpay_event_id)
         return _json(400, {"status": "bad_json"})
 
     result = PaymentService(db).handle_webhook_event(
@@ -65,3 +67,22 @@ def _json(status: int, body: dict):
     from fastapi.responses import JSONResponse
 
     return JSONResponse(status_code=status, content=body)
+
+
+def _audit_rejected(db: Session, why: str, event_id: str) -> None:
+    """Record a rejected webhook so a forged/malformed delivery leaves a trace
+    in the audit trail, not only in the logs. Best-effort — never raise."""
+    try:
+        from app.core.constants import AuditAction, AuditActor
+        from app.services.audit_service import AuditService
+
+        AuditService(db).log_event(
+            actor=AuditActor.SYSTEM,
+            action=AuditAction.WEBHOOK_REJECTED,
+            reason=f"Razorpay webhook rejected: {why}.",
+            metadata={"provider_event_id": event_id or None},
+        )
+        db.commit()
+    except Exception as exc:  # pragma: no cover - audit must never break the response
+        log.error("failed to audit a rejected webhook: %s", exc)
+        db.rollback()

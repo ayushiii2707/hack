@@ -160,6 +160,42 @@ def test_webhook_endpoint_rejects_bad_signature(client, order):
     assert r.json()["status"] == "invalid_signature"
 
 
+def test_rejected_webhook_leaves_an_audit_row(client, db_session, order):
+    from app.core.constants import AuditAction
+    from app.models.audit_log import AuditLog
+
+    body = json.dumps({"event": "payment.captured", "payload": {}})
+    client.post("/webhooks/razorpay", content=body,
+                headers={"X-Razorpay-Signature": "forged", "X-Razorpay-Event-Id": "evt_forged",
+                         "content-type": "application/json"})
+    rows = db_session.query(AuditLog).filter(AuditLog.action == AuditAction.WEBHOOK_REJECTED).all()
+    assert len(rows) == 1
+    assert "invalid signature" in rows[0].reason
+
+
+def test_processed_webhook_records_receipt_in_audit_trail(db_session, order, fake_rzp):
+    from app.core.constants import AuditAction
+    from app.models.audit_log import AuditLog
+
+    s = _svc(db_session, fake_rzp)
+    init = s.ensure_payment_order(order)
+    pid, _ = fake_rzp.simulate_success(init["razorpay_order_id"])
+    s.handle_webhook_event(
+        _captured_event(init["razorpay_order_id"], pid, order.amount), event_id="evt_recv"
+    )
+    received = db_session.query(AuditLog).filter(
+        AuditLog.action == AuditAction.WEBHOOK_RECEIVED, AuditLog.order_id == order.id
+    ).all()
+    assert len(received) == 1
+    # a same-event-id replay must NOT add a second receipt row
+    s.handle_webhook_event(
+        _captured_event(init["razorpay_order_id"], pid, order.amount), event_id="evt_recv"
+    )
+    assert db_session.query(AuditLog).filter(
+        AuditLog.action == AuditAction.WEBHOOK_RECEIVED, AuditLog.order_id == order.id
+    ).count() == 1
+
+
 def test_webhook_endpoint_fails_closed_without_secret(client, order, monkeypatch):
     from app.core.config import settings
 

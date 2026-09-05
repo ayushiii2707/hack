@@ -179,6 +179,14 @@ class CheckoutService:
             session, SessionState.PAYMENT_PENDING, reason="Checkout confirmed by customer"
         )
         self.audit.log_event(
+            actor=AuditActor.SYSTEM,
+            action=AuditAction.STOCK_RESERVED,
+            reason=f"Reserved stock for {len(reserved)} line(s) on order {order.id}.",
+            session_id=session_id,
+            order_id=order.id,
+            metadata={"lines": [{"product_id": p, "quantity": q} for p, q in reserved]},
+        )
+        self.audit.log_event(
             actor=actor,
             action=AuditAction.CHECKOUT_STARTED,
             reason=f"Checkout confirmed. Authoritative amount {order.amount} paise. Stock reserved.",
@@ -218,11 +226,21 @@ class CheckoutService:
         self.db.refresh(order)  # ORM object now reflects the CANCELLED status
 
         if order.stock_reserved:
+            released: list[dict] = []
             cart = self.carts.repo.get(order.cart_id)
             if cart is not None:
                 for item in cart.items:
                     self.products.increment_stock(item.product_id, item.quantity)
+                    released.append({"product_id": item.product_id, "quantity": item.quantity})
             order.stock_reserved = False
+            self.audit.log_event(
+                actor=AuditActor.SYSTEM,
+                action=AuditAction.STOCK_RELEASED,
+                reason=f"Released reserved stock for {len(released)} line(s) on cancelled order {order.id}.",
+                session_id=session_id,
+                order_id=order.id,
+                metadata={"lines": released},
+            )
 
         cart = self.carts.repo.get(order.cart_id)
         if cart is not None:

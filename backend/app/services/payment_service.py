@@ -284,10 +284,16 @@ class PaymentService:
                 "Payment could not be verified against the gateway."
             )
 
-        # 3. Record the CAPTURED attempt (unique constraint on captured_payment_key
-        #    is the final idempotency backstop under concurrency).
-        payment = self.payments.create_attempt(order_id=order.id, status=PaymentStatus.ATTEMPTED)
+        # 3. Record the CAPTURED attempt. Both unique constraints in play here —
+        #    (order_id, attempt_number) on the row, captured_payment_key on the
+        #    capture — are idempotency backstops under concurrency: whichever
+        #    one a losing racer trips, its IntegrityError unwinds this whole
+        #    unit (create_attempt included, so no half-written ATTEMPTED row is
+        #    left behind) and we return the idempotent "already verified" result.
         try:
+            payment = self.payments.create_attempt(
+                order_id=order.id, status=PaymentStatus.ATTEMPTED
+            )
             self.payments.finalize(
                 payment,
                 status=PaymentStatus.CAPTURED,
@@ -377,12 +383,24 @@ class PaymentService:
         order = self._get_order(order_id)
         if order.status == OrderStatus.PAID:
             raise PaymentError("Order is already paid; cannot mark it failed.")
-        result = self._fail(
-            order, reason=reason, razorpay_payment_id=razorpay_payment_id,
-            error_code=error_code, actor=actor,
-        )
-        self.db.commit()
-        return result
+        try:
+            result = self._fail(
+                order, reason=reason, razorpay_payment_id=razorpay_payment_id,
+                error_code=error_code, actor=actor,
+            )
+            self.db.commit()
+            return result
+        except IntegrityError:
+            # Lost an attempt-number / capture race with a concurrent caller.
+            self.db.rollback()
+            self.db.refresh(order)
+            latest = self.payments.latest_for_order(order.id)
+            return VerifyResult(
+                False, order.status.value,
+                latest.status.value if latest else PaymentStatus.FAILED.value,
+                latest.attempt_number if latest else 1,
+                "Payment failure already recorded.",
+            )
 
     def _fail(
         self,
@@ -512,6 +530,16 @@ class PaymentService:
             self.db.rollback()
             return {"handled": False, "reason": "unknown order"}
 
+        # Signature already verified by the route; this is a genuine, first-time
+        # delivery for a known order -> record receipt in the audit trail.
+        self.audit.log_payment_event(
+            action=AuditAction.WEBHOOK_RECEIVED,
+            reason=f"Signed Razorpay webhook '{etype}' received for order {order.id}.",
+            order_id=order.id, session_id=order.session_id,
+            actor=AuditActor.PAYMENT_PROVIDER,
+            metadata={"event": etype, "provider_event_id": event_id or None},
+        )
+
         if order.status == OrderStatus.CANCELLED:
             self.audit.log_payment_event(
                 action=AuditAction.PAYMENT_VERIFICATION_FAILED,
@@ -554,8 +582,10 @@ class PaymentService:
                     {"handled": True, "rejected": True, "reason": "reconciliation failed"},
                 )
 
-            payment = self.payments.create_attempt(order_id=order.id, status=PaymentStatus.ATTEMPTED)
             try:
+                payment = self.payments.create_attempt(
+                    order_id=order.id, status=PaymentStatus.ATTEMPTED
+                )
                 self.payments.finalize(
                     payment,
                     status=PaymentStatus.CAPTURED,
@@ -584,13 +614,18 @@ class PaymentService:
             )
             if existing_failed and existing_failed.status == PaymentStatus.FAILED:
                 return self._finish_webhook(event_id, etype, {"handled": True, "idempotent": True})
-            self._fail(
-                order,
-                reason=f"Webhook payment.failed: {pay_entity.get('error_description', 'payment failed')}",
-                razorpay_payment_id=razorpay_payment_id,
-                error_code=pay_entity.get("error_code"),
-                actor=AuditActor.PAYMENT_PROVIDER,
-            )
+            try:
+                self._fail(
+                    order,
+                    reason=f"Webhook payment.failed: {pay_entity.get('error_description', 'payment failed')}",
+                    razorpay_payment_id=razorpay_payment_id,
+                    error_code=pay_entity.get("error_code"),
+                    actor=AuditActor.PAYMENT_PROVIDER,
+                )
+            except IntegrityError:
+                # Concurrent delivery already recorded this failure.
+                self.db.rollback()
+                return {"handled": True, "idempotent": True}
             return self._finish_webhook(
                 event_id, etype,
                 {"handled": True, "order_status": OrderStatus.PAYMENT_FAILED.value},

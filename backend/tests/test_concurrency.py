@@ -360,5 +360,9 @@ def test_concurrent_identical_verify_calls_never_500_on_attempt_number_race(Sf):
         from app.core.constants import PaymentStatus
         from app.models.payment import Payment
 
-        caps = s.query(Payment).filter_by(order_id=oid, status=PaymentStatus.CAPTURED).count()
-        assert caps == 1  # still exactly one CAPTURED row despite the race
+        rows = s.query(Payment).filter_by(order_id=oid).all()
+        caps = [r for r in rows if r.status == PaymentStatus.CAPTURED]
+        assert len(caps) == 1  # still exactly one CAPTURED row despite the race
+        # and no half-finished ATTEMPTED rows left behind by a losing thread
+        assert all(r.status in (PaymentStatus.CAPTURED, PaymentStatus.FAILED) for r in rows), \
+            [(r.attempt_number, r.status.value) for r in rows]

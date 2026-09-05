@@ -60,9 +60,10 @@ identity, pricing, stock, checkout and payments.
 * **Concurrency:** the one-shot upsell, "one open order per cart", and stock
   reservation are enforced by **atomic guarded `UPDATE`s / `UNIQUE` columns**,
   not check-then-act — proven by threaded tests.
-* **Agent:** 10 tools, none of which can run SQL, touch the database, call
-  Razorpay, execute a payment, or mutate session state. Typed args → policy →
-  service. Prompt injection is covered by regression tests.
+* **Agent:** 12 allow-listed tools, none of which can run SQL, reach the
+  database or Razorpay directly, execute a payment, or drive the session state
+  machine. Every tool is typed args → policy → service. Prompt injection is
+  covered by regression tests.
 * **Abuse:** per-IP token-bucket rate limits on `/agent/chat`, `/payments/*`,
   `/sessions`, `/webhooks`, search. Configurable.
 * **Ops:** `X-Request-ID` on every request + audit row; structured JSON logs
@@ -155,7 +156,7 @@ The security-critical ones:
 ## Tests
 
 ```bash
-cd backend && pytest            # 121 tests
+cd backend && pytest            # 166 tests
 cd backend && ruff check .
 cd frontend && npm run build
 ```

@@ -83,6 +83,28 @@ def test_cancel_releases_stock_and_order(db_session, session_obj):
     assert order.open_cart_key is None
 
 
+def test_stock_reserve_and_release_are_independently_auditable(db_session, session_obj):
+    from app.core.constants import AuditAction
+    from app.models.audit_log import AuditLog
+
+    p = make_product(db_session, price=100000, stock=5)
+    CartService(db_session).add_item(session_obj.cart.id, p.id, 2)
+    svc = CheckoutService(db_session)
+    order = svc.confirm_checkout(session_obj.id)
+
+    reserved = db_session.query(AuditLog).filter(
+        AuditLog.action == AuditAction.STOCK_RESERVED, AuditLog.order_id == order.id
+    ).all()
+    assert len(reserved) == 1
+    assert reserved[0].meta and "lines" in reserved[0].meta
+
+    svc.cancel_checkout(session_obj.id)
+    released = db_session.query(AuditLog).filter(
+        AuditLog.action == AuditAction.STOCK_RELEASED, AuditLog.order_id == order.id
+    ).all()
+    assert len(released) == 1
+
+
 def test_checkout_api_flow(api, db_session):
     p = make_product(db_session, price=150000, stock=10)
     api.post("/cart/items", json={"product_id": p.id, "quantity": 1})

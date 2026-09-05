@@ -2,15 +2,12 @@
 from __future__ import annotations
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.constants import PaymentStatus
-from app.core.exceptions import ConflictError
 from app.models.payment import Payment
 
 _TERMINAL = (PaymentStatus.CAPTURED, PaymentStatus.FAILED)
-_MAX_ATTEMPT_NUMBER_RETRIES = 8
 
 
 class PaymentRepository:
@@ -30,40 +27,30 @@ class PaymentRepository:
         method: str = "checkout",
         status: PaymentStatus = PaymentStatus.ATTEMPTED,
     ) -> Payment:
-        """Allocate the next attempt row for an order.
+        """Insert the next attempt row for an order and flush it.
 
         ``next_attempt_number`` is a read (MAX+1), not an atomic counter, so
         two concurrent callers for the SAME order (a double-tap on verify, a
-        client retry racing a webhook, two duplicate webhook deliveries) can
-        compute the same number and both try to INSERT it. The unique
-        constraint on ``(order_id, attempt_number)`` correctly stops the
-        collision at the database, but without this retry the loser's
-        IntegrityError propagated out of every caller (verify_payment,
-        record_client_failure, the webhook handler, ...) as a raw, uncaught
-        500 instead of the idempotent response those callers already know how
-        to give. Each retry runs in its own SAVEPOINT so only the failed
-        INSERT is undone — not whatever the caller had already done earlier in
-        this transaction.
+        client retry racing a webhook, duplicate webhook deliveries) can
+        compute the same number and collide on the ``(order_id,
+        attempt_number)`` unique constraint. The collision surfaces here as an
+        ``IntegrityError`` on flush; every caller wraps its create-attempt +
+        finalize + commit in one ``try/except IntegrityError`` that rolls the
+        whole unit back and returns the idempotent "already handled" response —
+        so the loser never leaves a half-written ATTEMPTED row behind and never
+        500s. (A SAVEPOINT-scoped retry here was tried and dropped: pysqlite's
+        SAVEPOINT handling let the rolled-back INSERT stay committed, leaving a
+        dangling ATTEMPTED row on SQLite that never appeared on PostgreSQL.)
         """
-        last_error: IntegrityError | None = None
-        for _ in range(_MAX_ATTEMPT_NUMBER_RETRIES):
-            payment = Payment(
-                order_id=order_id,
-                attempt_number=self.next_attempt_number(order_id),
-                method=method,
-                status=status,
-            )
-            try:
-                with self.db.begin_nested():
-                    self.db.add(payment)
-                    self.db.flush()
-                return payment
-            except IntegrityError as exc:
-                last_error = exc
-                continue
-        raise ConflictError(
-            "Could not allocate a payment attempt right now; please retry."
-        ) from last_error
+        payment = Payment(
+            order_id=order_id,
+            attempt_number=self.next_attempt_number(order_id),
+            method=method,
+            status=status,
+        )
+        self.db.add(payment)
+        self.db.flush()
+        return payment
 
     def get(self, payment_id: str) -> Payment | None:
         return self.db.get(Payment, payment_id)
