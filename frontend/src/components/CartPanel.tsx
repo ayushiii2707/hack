@@ -17,13 +17,20 @@ export function CartPanel({
   const empty = !cart || cart.items.length === 0;
   return (
     <section className="block">
-      <div className="block-title">🛒 Cart {cart ? `· ${cart.items.length} item(s)` : ""}</div>
+      <div className="block-title">
+        <span>🛒</span> Cart {cart ? `· ${cart.items.length} item${cart.items.length === 1 ? "" : "s"}` : ""}
+      </div>
       <div>
-        {empty && <p className="hint">Your cart is empty.</p>}
+        {empty && (
+          <div className="cart-empty">
+            <div className="ring">🛒</div>
+            Your cart is empty — ask the assistant to add something.
+          </div>
+        )}
         {!empty &&
           cart!.items.map((li) => (
             <div className="line" key={li.product_id}>
-              <div style={{ flex: 1 }}>
+              <div className="l-name">
                 <div>{li.name}</div>
                 <div className="hint">{li.unit_price_display} each</div>
               </div>
@@ -36,8 +43,8 @@ export function CartPanel({
                   +
                 </button>
               </div>
-              <div style={{ width: 90, textAlign: "right" }}>{li.line_total_display}</div>
-              <button className="ghost" disabled={busy} onClick={() => onRemove(li.product_id)}>
+              <div className="l-total">{li.line_total_display}</div>
+              <button className="l-x" disabled={busy} onClick={() => onRemove(li.product_id)}>
                 ✕
               </button>
             </div>
@@ -57,12 +64,12 @@ export function CartPanel({
               <span>Total</span>
               <span>{t.total_display}</span>
             </div>
-            <p className="hint">Totals are calculated and locked by the backend.</p>
+            <p className="hint lock-note">🔒 Totals are calculated and locked by the backend.</p>
           </div>
         )}
 
         {!empty && (
-          <button className="primary" style={{ marginTop: 12, width: "100%" }} disabled={busy} onClick={onReview}>
+          <button className="primary cart-cta" disabled={busy} onClick={onReview}>
             Review &amp; Checkout
           </button>
         )}

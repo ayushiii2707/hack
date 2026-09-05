@@ -14,14 +14,14 @@ export function UpsellCard({
   if (!upsell.available || !upsell.product) return null;
   return (
     <div className="upsell">
-      <div>✨ You might also like</div>
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        {upsell.product.image_url && (
-          <img src={upsell.product.image_url} alt="" style={{ width: 56, height: 56, objectFit: "contain" }} />
-        )}
+      <div className="u-tag">
+        <span className="sparkle">✦</span> You might also like
+      </div>
+      <div className="u-prod">
+        {upsell.product.image_url && <img src={upsell.product.image_url} alt="" />}
         <div>
-          <div style={{ fontWeight: 700 }}>{upsell.product.name}</div>
-          <div>{upsell.product.price_display}</div>
+          <div className="u-name">{upsell.product.name}</div>
+          <div className="u-price">{upsell.product.price_display}</div>
         </div>
       </div>
       <div className="why">

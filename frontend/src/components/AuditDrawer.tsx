@@ -19,22 +19,26 @@ export function AuditDrawer({ onClose }: { onClose: () => void }) {
     <div className="drawer">
       <header>
         <strong>Audit trail</strong>
-        <span className="hint" style={{ marginLeft: 8 }}>(this session)</span>
+        <span className="hint">· this session</span>
         <span className="spacer" />
         <button className="ghost" onClick={onClose}>
           ✕
         </button>
       </header>
       <div className="body">
-        {events.length === 0 && <p className="hint" style={{ padding: 16 }}>No events yet.</p>}
+        {events.length === 0 && (
+          <p className="hint" style={{ padding: 18 }}>
+            No events yet — every backend action will appear here, newest first.
+          </p>
+        )}
         {events.map((e) => (
           <div className="event" key={e.id}>
             <div className="top">
-              <span className="hint">{e.created_at?.slice(11, 19)}</span>
-              <span className="actor">{e.actor}</span>
-              <span className="action">{e.action}</span>
+              <span className="e-time">{e.created_at?.slice(11, 19)}</span>
+              <span className="e-actor">{e.actor}</span>
+              <span className="e-action">{e.action}</span>
             </div>
-            <div className="reason">{e.reason}</div>
+            <div className="e-reason">{e.reason}</div>
           </div>
         ))}
       </div>

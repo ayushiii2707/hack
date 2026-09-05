@@ -6,7 +6,7 @@ export interface ChatMessage {
 }
 
 const SUGGESTIONS = [
-  "Show me running shoes under ₹3000",
+  "Find me a laptop under ₹60,000",
   "Add the first one",
   "Show me my cart",
   "I'm ready to check out",
@@ -37,20 +37,30 @@ export function ChatPanel({
 
   return (
     <div className="panel chat">
-      <header>💬 Checkout Copilot</header>
-      <div className="messages">
-        {messages.length === 0 && (
-          <div className="msg assistant">
-            Hi! I can help you find products, build your cart, and check out with a real (test-mode)
-            payment. Try one of the suggestions below.
+      <header>
+        <span className="hd-ico">💬</span> Checkout Copilot
+      </header>
+      <div className={`messages${messages.length === 0 ? " empty" : ""}`}>
+        {messages.length === 0 ? (
+          <>
+            <div className="intro-badge">✦</div>
+            <div className="intro-copy">
+              Talk naturally to build a cart and pay with a real <strong>test-mode</strong> Razorpay
+              checkout. Pricing, stock and every payment step stay locked to the backend.
+            </div>
+          </>
+        ) : (
+          messages.map((m, i) => (
+            <div className={`msg ${m.role}`} key={i}>
+              {m.role === "tool" ? `⚙ ${m.content}` : m.content}
+            </div>
+          ))
+        )}
+        {busy && (
+          <div className="msg assistant typing">
+            <i /><i /><i />
           </div>
         )}
-        {messages.map((m, i) => (
-          <div className={`msg ${m.role}`} key={i}>
-            {m.role === "tool" ? `⚙︎ ${m.content}` : m.content}
-          </div>
-        ))}
-        {busy && <div className="msg assistant">…</div>}
         <div ref={endRef} />
       </div>
       <div className="suggest">

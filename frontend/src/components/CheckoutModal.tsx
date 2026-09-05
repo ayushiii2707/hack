@@ -38,19 +38,19 @@ export function CheckoutModal({
   return (
     <div className="overlay">
       <div className="modal">
-        <header>{paid ? "Payment complete" : failed ? "Payment failed" : "Order review"}</header>
+        <header>{paid ? "Payment complete" : failed ? "Payment not completed" : "Order review"}</header>
         <div className="body">
           {phase === "review" && (
             <>
               {review.items.map((li) => (
-                <div className="line" key={li.product_id}>
-                  <div style={{ flex: 1 }}>
+                <div className="review-line" key={li.product_id}>
+                  <span>
                     {li.name} <span className="hint">× {li.quantity}</span>
-                  </div>
-                  <div>{li.line_total_display}</div>
+                  </span>
+                  <span>{li.line_total_display}</span>
                 </div>
               ))}
-              <div className="totals">
+              <div className="review-totals">
                 <div className="row">
                   <span>Subtotal</span>
                   <span>{t.subtotal_display}</span>
@@ -64,7 +64,7 @@ export function CheckoutModal({
                   <span>{t.total_display}</span>
                 </div>
               </div>
-              <p className="hint">
+              <p className="pay-note">
                 You’ll pay exactly {t.total_display}. Nothing is charged until you complete Razorpay
                 checkout.
               </p>
@@ -73,7 +73,7 @@ export function CheckoutModal({
               )}
               {!razorpayReady && (
                 <p className="hint">
-                  Razorpay test keys aren’t configured on the server — use “Get payment link”.
+                  Razorpay Checkout isn’t available — use “Get payment link”.
                 </p>
               )}
             </>
@@ -81,8 +81,14 @@ export function CheckoutModal({
 
           {phase === "paying" && (
             <div className="result">
-              <div className="icon">⏳</div>
-              <p>Waiting for the Razorpay payment window…</p>
+              <div className="icon" style={{ background: "var(--surface-2)" }}>
+                ⏳
+              </div>
+              <h3>Waiting for Razorpay</h3>
+              <p className="hint">Complete the payment in the Razorpay window.</p>
+              <span className="waiting">
+                <i /><i /><i />
+              </span>
             </div>
           )}
 
@@ -101,7 +107,7 @@ export function CheckoutModal({
 
           {attempts.length > 0 && (
             <div className="attempts">
-              <div className="hint">Payment attempts</div>
+              <div className="a-title">Payment attempts</div>
               {attempts.map((a) => (
                 <div className="a" key={a.id}>
                   <span>
@@ -115,12 +121,12 @@ export function CheckoutModal({
           )}
 
           {paymentLinkUrl && (
-            <p style={{ marginTop: 12 }}>
+            <div className="link-box">
               Payment link:{" "}
               <a href={paymentLinkUrl} target="_blank" rel="noreferrer">
                 {paymentLinkUrl}
               </a>
-            </p>
+            </div>
           )}
         </div>
 

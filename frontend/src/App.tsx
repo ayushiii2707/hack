@@ -246,15 +246,31 @@ export default function App() {
 
   return (
     <div className="app">
-      <div className="topbar">
-        <h1>Checkout Copilot</h1>
-        <span className={`badge ${health?.gemini_configured ? "on" : "off"}`}>
-          Gemini {health?.gemini_configured ? "ready" : "off"}
-        </span>
-        <span className={`badge ${health?.razorpay_configured ? "on" : "off"}`}>
-          Razorpay {health?.razorpay_configured ? "test-mode" : "off"}
-        </span>
-        <span className="badge">state: {session?.state ?? "…"}</span>
+      <div className="bg-fx" aria-hidden="true">
+        <div className="orb a" />
+        <div className="orb b" />
+        <div className="orb c" />
+        <div className="grid-lines" />
+        <div className="noise" />
+      </div>
+
+      <nav className="nav">
+        <div className="wordmark">
+          <span className="mark">C</span>
+          Checkout&nbsp;<b>Copilot</b>
+        </div>
+        <span className="divider" />
+        <div className="chips">
+          <span className={`chip ${health?.gemini_configured ? "on" : "off"}`}>
+            <span className="dot" />
+            Gemini {health?.gemini_configured ? "ready" : "off"}
+          </span>
+          <span className={`chip ${health?.razorpay_configured ? "on" : "off"}`}>
+            <span className="dot" />
+            Razorpay {health?.razorpay_configured ? "test-mode" : "off"}
+          </span>
+          <span className="chip state">{session?.state ?? "…"}</span>
+        </div>
         <span className="spacer" />
         <button className="ghost" onClick={() => setAuditOpen(true)}>
           Audit trail
@@ -268,19 +284,21 @@ export default function App() {
         >
           New session
         </button>
-      </div>
+      </nav>
 
-      {error && <div style={{ padding: "8px 16px", color: "var(--err)", fontSize: 13 }}>{error}</div>}
+      {error && <div className="err-banner">{error}</div>}
 
       <div className="layout">
         <ChatPanel messages={messages} busy={busy} onSend={send} />
 
         <div className="panel">
-          <header>🛍️ Store</header>
+          <header>
+            <span className="hd-ico">🛍️</span> Store
+          </header>
           <div className="body store-body">
             {checkoutHint && !review && (
-              <div className="upsell" style={{ borderColor: "var(--accent-2)" }}>
-                <div>The assistant moved you to checkout review.</div>
+              <div className="handoff">
+                <span>The assistant moved you to checkout review.</span>
                 <button className="primary" onClick={openReview} disabled={busy}>
                   Open order review
                 </button>
@@ -291,7 +309,9 @@ export default function App() {
             )}
             <CartPanel cart={cart} busy={busy} onQty={setQty} onRemove={removeItem} onReview={openReview} />
             <section className="block">
-              <div className="block-title">🛍️ Results</div>
+              <div className="block-title">
+                <span>🛍️</span> Results
+              </div>
               <ProductGrid products={products} onAdd={addToCart} busy={busy} />
             </section>
           </div>
