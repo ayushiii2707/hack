@@ -209,3 +209,91 @@ def test_simulate_failure_requires_demo_flag(api, db_session, fake_rzp, monkeypa
     assert api.post("/payments/simulate-failure").status_code == 403
     monkeypatch.setattr(settings, "enable_demo_endpoints", True)
     assert api.post("/payments/simulate-failure").json()["success"] is False
+
+
+def test_gateway_fetch_error_is_a_clean_verification_failure_not_a_500(db_session, order, fake_rzp):
+    """A payment id the gateway can't find at all (forged, or a genuine
+    upstream hiccup) must fail the same clean, audited way as a bad signature
+    or an amount mismatch -- never bubble up as a raw 502 gateway exception."""
+    from app.core.exceptions import RazorpayError
+
+    s = svc(db_session, fake_rzp)
+    init = s.ensure_payment_order(order)
+    pid = "pay_GATEWAY_UNKNOWN"
+    sig = sign(f"{init['razorpay_order_id']}|{pid}")
+
+    def boom(razorpay_payment_id):
+        raise RazorpayError("Could not fetch payment: payment not found")
+
+    fake_rzp.fetch_payment = boom
+    with pytest.raises(PaymentVerificationError):
+        s.verify_payment(order=order, razorpay_order_id=init["razorpay_order_id"],
+                          razorpay_payment_id=pid, razorpay_signature=sig)
+    db_session.refresh(order)
+    assert order.status == OrderStatus.PAYMENT_PENDING  # not PAID, not silently FAILED either
+    actions = {a.action for a in db_session.query(AuditLog).all()}
+    assert AuditAction.PAYMENT_VERIFICATION_FAILED in actions
+
+
+def test_cancelled_order_rejects_payment_order_creation(db_session, order, fake_rzp):
+    s = svc(db_session, fake_rzp)
+    CheckoutService(db_session).cancel_checkout(order.session_id)
+    db_session.refresh(order)
+    with pytest.raises(ConflictError):
+        s.ensure_payment_order(order)
+
+
+def test_cancelled_order_rejects_client_failure_report(db_session, order, fake_rzp):
+    s = svc(db_session, fake_rzp)
+    CheckoutService(db_session).cancel_checkout(order.session_id)
+    db_session.refresh(order)
+    with pytest.raises(ConflictError):
+        s.record_client_failure(order=order, reason="card declined")
+
+
+def test_cancelled_order_rejects_payment_link_creation(db_session, order, fake_rzp):
+    s = svc(db_session, fake_rzp)
+    CheckoutService(db_session).cancel_checkout(order.session_id)
+    db_session.refresh(order)
+    with pytest.raises(ConflictError):
+        s.create_payment_link(order)
+
+
+# ---- API level: payments routes resolve the caller's LATEST order, not only
+# an open one, so a retry after the order reaches a terminal state gets the
+# service's own friendly response instead of a generic 404 ----
+def test_double_verify_via_api_after_success_is_a_friendly_replay_not_404(api, db_session, fake_rzp):
+    p = make_product(db_session, price=150000, stock=10)
+    api.post("/cart/items", json={"product_id": p.id, "quantity": 1})
+    api.post("/checkout/confirm")
+    init = api.post("/payments/order").json()
+    pid, sig = fake_rzp.simulate_success(init["razorpay_order_id"])
+    body = {"razorpay_order_id": init["razorpay_order_id"],
+            "razorpay_payment_id": pid, "razorpay_signature": sig}
+    r1 = api.post("/payments/verify", json=body)
+    assert r1.status_code == 200 and r1.json()["success"] is True
+    r2 = api.post("/payments/verify", json=body)  # the order is no longer "open"
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["success"] is True
+    assert "already verified" in r2.json()["message"].lower()
+
+
+def test_payment_order_creation_after_cancel_via_api_is_409_not_404(api, db_session):
+    p = make_product(db_session, price=150000, stock=10)
+    api.post("/cart/items", json={"product_id": p.id, "quantity": 1})
+    api.post("/checkout/confirm")
+    api.post("/checkout/cancel")
+    r = api.post("/payments/order")
+    assert r.status_code == 409, r.text
+
+
+def test_verify_after_cancel_via_api_is_409_not_404(api, db_session, fake_rzp):
+    p = make_product(db_session, price=150000, stock=10)
+    api.post("/cart/items", json={"product_id": p.id, "quantity": 1})
+    api.post("/checkout/confirm")
+    api.post("/checkout/cancel")
+    r = api.post("/payments/verify", json={
+        "razorpay_order_id": "order_whatever", "razorpay_payment_id": "pay_whatever",
+        "razorpay_signature": "0" * 64,
+    })
+    assert r.status_code == 409, r.text

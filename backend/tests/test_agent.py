@@ -58,8 +58,9 @@ def test_agent_has_no_payment_tool(db_session, session_obj):
     assert names == {
         "search_products", "get_product", "add_to_cart", "update_cart_quantity",
         "remove_from_cart", "get_cart", "calculate_total", "request_upsell",
-        "start_checkout", "get_checkout_status",
+        "accept_upsell", "decline_upsell", "start_checkout", "get_checkout_status",
     }
+    assert not any("payment" in n for n in names)
 
 
 def test_agent_second_upsell_is_blocked(db_session, session_obj):
@@ -108,3 +109,117 @@ def test_agent_falls_back_when_model_raises(db_session, session_obj):
     resp = run_agent(db_session, session_id=session_obj.id, message="show me shoes",
                      model=Boom(script=[final("x")]))
     assert "search_products" in resp.tool_calls  # deterministic fallback still worked
+
+
+# ---- deterministic fallback router: cart mutation by explicit product name ----
+# (No GEMINI_API_KEY in the test environment -> run_agent(model=None) always
+# takes the keyword-router path in app/agent/agent.py::_run_fallback.)
+
+def test_fallback_adds_named_product_to_cart(db_session, session_obj):
+    make_product(db_session, external_id="f1", name="Velocity Running Shoes",
+                 price=280000, stock=10)
+    resp = run_agent(db_session, session_id=session_obj.id,
+                      message="add the Velocity Running Shoes to my cart")
+    cart = SessionService(db_session).get_session(session_obj.id).cart
+    assert [i.quantity for i in cart.items] == [1]
+    assert "add_to_cart" in resp.tool_calls
+
+
+def test_fallback_refuses_ambiguous_pronoun_add_without_mutating_cart(db_session, session_obj):
+    make_product(db_session, external_id="f2", name="Velocity Running Shoes",
+                 price=280000, stock=10)
+    resp = run_agent(db_session, session_id=session_obj.id, message="add the first one to my cart")
+    cart = SessionService(db_session).get_session(session_obj.id).cart
+    assert cart.items == []  # never guesses which product "the first one" means
+    assert "add_to_cart" not in resp.tool_calls
+    assert "not sure which item" in resp.message.lower()
+
+
+def test_fallback_updates_quantity_by_name(db_session, session_obj):
+    from app.services.cart_service import CartService
+
+    p = make_product(db_session, external_id="f3", name="Velocity Running Shoes",
+                      price=280000, stock=10)
+    CartService(db_session).add_item(session_obj.cart.id, p.id, 1)
+    run_agent(db_session, session_id=session_obj.id,
+              message="set Velocity Running Shoes quantity to 3")
+    cart = SessionService(db_session).get_session(session_obj.id).cart
+    assert cart.items[0].quantity == 3
+
+
+def test_fallback_removes_named_product_from_cart(db_session, session_obj):
+    from app.services.cart_service import CartService
+
+    p = make_product(db_session, external_id="f4", name="Velocity Running Shoes",
+                      price=280000, stock=10)
+    CartService(db_session).add_item(session_obj.cart.id, p.id, 1)
+    run_agent(db_session, session_id=session_obj.id,
+              message="remove the Velocity Running Shoes from my cart")
+    cart = SessionService(db_session).get_session(session_obj.id).cart
+    assert cart.items == []
+
+
+def test_fallback_how_much_reports_total_without_mutating_cart(db_session, session_obj):
+    from app.services.cart_service import CartService
+
+    p = make_product(db_session, external_id="f5", name="Shoes", price=280000, stock=10)
+    CartService(db_session).add_item(session_obj.cart.id, p.id, 1)
+    resp = run_agent(db_session, session_id=session_obj.id, message="How much will I pay?")
+    assert "get_cart" in resp.tool_calls
+    assert any(a.type == "SHOW_CART" for a in resp.actions)
+
+
+def test_fallback_decline_upsell_via_chat(db_session, session_obj):
+    from app.services.cart_service import CartService
+    from app.services.upsell_service import UpsellService
+
+    anchor = make_product(db_session, external_id="f6a", name="Shoes", category="mens-shoes",
+                          price=280000, stock=10, tags=["running"])
+    make_product(db_session, external_id="f6b", name="Socks", category="mens-shoes",
+                 price=15000, stock=10, tags=["running", "socks"])
+    CartService(db_session).add_item(session_obj.cart.id, anchor.id, 1)
+    UpsellService(db_session).generate_recommendation(session_obj.id)
+
+    resp = run_agent(db_session, session_id=session_obj.id, message="No thanks, I'll decline that.")
+    assert "decline_upsell" in resp.tool_calls
+    session = SessionService(db_session).get_session(session_obj.id)
+    assert session.upsell_declined is True
+    assert session.upsell_accepted is False
+
+
+def test_fallback_accept_upsell_via_chat(db_session, session_obj):
+    from app.services.cart_service import CartService
+    from app.services.upsell_service import UpsellService
+
+    anchor = make_product(db_session, external_id="f7a", name="Shoes", category="mens-shoes",
+                          price=280000, stock=10, tags=["running"])
+    make_product(db_session, external_id="f7b", name="Socks", category="mens-shoes",
+                 price=15000, stock=10, tags=["running", "socks"])
+    CartService(db_session).add_item(session_obj.cart.id, anchor.id, 1)
+    UpsellService(db_session).generate_recommendation(session_obj.id)
+
+    resp = run_agent(db_session, session_id=session_obj.id, message="Sounds good, I'll take it.")
+    assert "accept_upsell" in resp.tool_calls
+    session = SessionService(db_session).get_session(session_obj.id)
+    assert session.upsell_accepted is True
+
+
+def test_fallback_recognizes_complementary_phrasing_for_upsell(db_session, session_obj):
+    from app.services.cart_service import CartService
+
+    anchor = make_product(db_session, external_id="f8a", name="Shoes", category="mens-shoes",
+                          price=280000, stock=10, tags=["running"])
+    make_product(db_session, external_id="f8b", name="Socks", category="mens-shoes",
+                 price=15000, stock=10, tags=["running", "socks"])
+    CartService(db_session).add_item(session_obj.cart.id, anchor.id, 1)
+    resp = run_agent(db_session, session_id=session_obj.id,
+                      message="Do you have anything complementary?")
+    assert "request_upsell" in resp.tool_calls
+
+
+def test_fallback_decline_upsell_before_any_upsell_shown_is_a_safe_error(db_session, session_obj):
+    resp = run_agent(db_session, session_id=session_obj.id, message="no thanks, not interested")
+    assert "decline_upsell" in resp.tool_calls
+    session = SessionService(db_session).get_session(session_obj.id)
+    assert session.upsell_declined is False  # nothing to decline yet; must not fabricate state
+    assert "couldn't" in resp.message.lower()

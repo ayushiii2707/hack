@@ -29,7 +29,13 @@ router = APIRouter(prefix="/payments", tags=["payments"])
 
 
 def _open_order(db: Session, session: ShopSession):
-    return CheckoutService(db).open_order_for_session(session.id)
+    # Deliberately the LATEST order, not only an OPEN one: once an order is
+    # settled (PAID/CANCELLED), the service methods below already give a
+    # friendly, correct response (e.g. "already verified", "already paid",
+    # "cancelled and cannot be paid") — resolving to the open order only would
+    # mask all of that behind a generic 404 for any retry after the order
+    # reaches a terminal state (double-submit, browser retry, etc).
+    return CheckoutService(db).latest_order_for_session(session.id)
 
 
 @router.post("/order", response_model=PaymentInitOut, summary="Create the Razorpay order for my open order")

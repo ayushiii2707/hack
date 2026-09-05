@@ -1,7 +1,7 @@
 """Cart + cart-item persistence."""
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.constants import CartStatus
@@ -45,6 +45,30 @@ class CartRepository:
     def set_item_quantity(self, item: CartItem, quantity: int) -> None:
         item.quantity = quantity
         self.db.flush()
+
+    def try_bump_quantity(
+        self, cart_id: str, product_id: str, delta: int, *, max_quantity: int
+    ) -> int | None:
+        """Atomically add ``delta`` to an existing line's quantity, honouring
+        ``max_quantity`` in the same guarded UPDATE — a plain read-compute-write
+        (read quantity, add delta in Python, UPDATE the sum) loses concurrent
+        increments to the same line under a race, because every writer commits
+        the same stale sum. Returns the new quantity on success; None if the
+        row doesn't exist yet or the bump would exceed the cap (indistinguishable
+        to the caller, which re-checks precisely with a plain read)."""
+        result = self.db.execute(
+            update(CartItem)
+            .where(
+                CartItem.cart_id == cart_id,
+                CartItem.product_id == product_id,
+                CartItem.quantity + delta <= max_quantity,
+            )
+            .values(quantity=CartItem.quantity + delta)
+        )
+        self.db.flush()
+        if (result.rowcount or 0) != 1:
+            return None
+        return self.get_item(cart_id, product_id).quantity
 
     def remove_item(self, item: CartItem) -> None:
         self.db.delete(item)

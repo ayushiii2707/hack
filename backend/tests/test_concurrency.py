@@ -228,3 +228,137 @@ def test_stock_restored_on_cancel_under_concurrency(Sf):
     with Sf() as s:
         CheckoutService(s).cancel_checkout(sid)
         assert ProductRepository(s).get_by_id(pid).stock == 5
+
+
+def test_concurrent_adds_to_the_same_line_never_lose_an_increment(Sf, monkeypatch):
+    """A live QC pass caught this: 10 threads each POSTing +1 of the SAME
+    product to the SAME cart used to collapse to a final quantity of 1, not
+    10 -- every thread read the line's starting quantity, computed its own
+    "+1" in Python, and the last UPDATE to commit clobbered the rest. The fix
+    (CartRepository.try_bump_quantity) makes the increment happen inside the
+    UPDATE itself, so no reader ever works from a stale value."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "max_item_quantity", 100)  # isolate from the cap
+    with Sf() as s:
+        p = make_product(s, price=100000, stock=1000)
+        pid = p.id
+        issued = SessionService(s).create_session()
+        sid = issued.session.id
+        cart_id = issued.session.cart.id
+
+    def add_one(_):
+        with Sf() as s:
+            CartService(s).add_item(cart_id, pid, 1)
+
+    _run(10, add_one)
+
+    with Sf() as s:
+        cart = SessionService(s).get_session(sid).cart
+        assert len(cart.items) == 1
+        assert cart.items[0].quantity == 10
+
+
+def test_concurrent_first_adds_of_a_new_line_never_lose_an_increment(Sf, monkeypatch):
+    """Same race, but for the INSERT path: 10 threads add a product that is
+    NOT yet in the cart at the same time. Exactly one INSERT should win the
+    unique-constraint race; the other nine must fall back to bumping the row
+    that now exists, not silently drop their quantity or crash."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "max_item_quantity", 100)  # isolate from the cap
+    with Sf() as s:
+        p = make_product(s, price=100000, stock=1000)
+        pid = p.id
+        issued = SessionService(s).create_session()
+        sid = issued.session.id
+        cart_id = issued.session.cart.id
+
+    def add_one(_):
+        with Sf() as s:
+            CartService(s).add_item(cart_id, pid, 1)
+
+    _run(10, add_one)
+
+    with Sf() as s:
+        cart = SessionService(s).get_session(sid).cart
+        assert len(cart.items) == 1  # no duplicate rows for the same product
+        assert cart.items[0].quantity == 10
+
+
+def test_concurrent_adds_past_the_cap_reject_the_overflow_not_lose_it(Sf):
+    """The cap (default max_item_quantity=5) must still hold exactly under
+    concurrency: with 10 threads racing to add +1 each, exactly 5 succeed and
+    the rest get a real PolicyViolationError -- never a silently-lost
+    increment AND never a cart that ends up over the cap."""
+    from app.core.exceptions import PolicyViolationError
+
+    with Sf() as s:
+        p = make_product(s, price=100000, stock=1000)
+        pid = p.id
+        issued = SessionService(s).create_session()
+        sid = issued.session.id
+        cart_id = issued.session.cart.id
+
+    def add_one(_):
+        with Sf() as s:
+            try:
+                CartService(s).add_item(cart_id, pid, 1)
+                return True
+            except PolicyViolationError:
+                return False
+
+    results = _run(10, add_one)
+    with Sf() as s:
+        cart = SessionService(s).get_session(sid).cart
+        assert len(cart.items) == 1
+        assert cart.items[0].quantity == 5  # the configured max_item_quantity
+        assert results.count(True) == 5
+        assert results.count(False) == 5
+
+
+def test_concurrent_identical_verify_calls_never_500_on_attempt_number_race(Sf):
+    """A live QC pass caught this: PaymentRepository.create_attempt allocates
+    an attempt_number with a plain read (MAX+1) then INSERT -- two concurrent
+    callers for the same order can compute the same number and race to insert
+    it. The unique constraint on (order_id, attempt_number) correctly stops
+    the collision at the database, but the loser's IntegrityError used to
+    propagate out of verify_payment as a raw, uncaught 500 instead of the
+    idempotent "already verified" response every caller here is entitled to.
+    """
+    import sys
+
+    sys.path.insert(0, "tests")
+    from factories import FakeRazorpayClient
+
+    from app.services.payment_service import PaymentService
+
+    fake = FakeRazorpayClient()
+    with Sf() as s:
+        p = make_product(s, price=250000, stock=10)
+        pid = p.id
+        sid = SessionService(s).create_session().session.id
+        CartService(s).add_item(SessionService(s).get_session(sid).cart.id, pid, 1)
+        oid = CheckoutService(s).confirm_checkout(sid).id
+        rzp_order_id = PaymentService(s, client=fake).ensure_payment_order(
+            CheckoutService(s).get_order(oid)
+        )["razorpay_order_id"]
+    payment_id, sig = fake.simulate_success(rzp_order_id)
+
+    def verify(_):
+        with Sf() as s:
+            result = PaymentService(s, client=fake).verify_payment(
+                order=CheckoutService(s).get_order(oid),
+                razorpay_order_id=rzp_order_id, razorpay_payment_id=payment_id,
+                razorpay_signature=sig,
+            )
+            return result.success
+
+    results = _run(10, verify)
+    assert all(results), results  # no exception escaped to a caller; every reply is success
+    with Sf() as s:
+        from app.core.constants import PaymentStatus
+        from app.models.payment import Payment
+
+        caps = s.query(Payment).filter_by(order_id=oid, status=PaymentStatus.CAPTURED).count()
+        assert caps == 1  # still exactly one CAPTURED row despite the race

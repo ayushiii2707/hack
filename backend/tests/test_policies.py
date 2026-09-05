@@ -32,7 +32,7 @@ def test_tool_inventory_has_no_dangerous_capability(db_session, session_obj):
     assert names == {
         "search_products", "get_product", "add_to_cart", "update_cart_quantity",
         "remove_from_cart", "get_cart", "calculate_total", "request_upsell",
-        "start_checkout", "get_checkout_status",
+        "accept_upsell", "decline_upsell", "start_checkout", "get_checkout_status",
     }
     for forbidden in ("execute_payment", "pay", "mark_payment_success", "modify_order_total",
                       "raw_sql", "raw_database", "raw_razorpay", "set_session_state"):

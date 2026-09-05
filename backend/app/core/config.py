@@ -55,7 +55,10 @@ class Settings(BaseSettings):
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
-    razorpay_base_url: str = "https://api.razorpay.com/v1"
+    # NOTE: the razorpay SDK's resource classes already prepend "/v1/<resource>"
+    # to every request path, so this must be the bare host — NOT ".../v1" (that
+    # would double up to ".../v1/v1/orders" and every gateway call would 404).
+    razorpay_base_url: str = "https://api.razorpay.com"
     razorpay_timeout_seconds: float = 15.0
     catalog_base_url: str = "https://dummyjson.com"
     catalog_timeout_seconds: float = 15.0

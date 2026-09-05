@@ -45,6 +45,9 @@ class RazorpayClient:
         self._sdk = razorpay.Client(
             session=_TimeoutSession(settings.razorpay_timeout_seconds),
             auth=(self.key_id, self.key_secret),
+            # Overridable so a staging/sandbox proxy (or a test double) can be
+            # targeted without code changes; defaults to the real API.
+            base_url=settings.razorpay_base_url,
         )
         self._sdk.set_app_details({"title": settings.app_name, "version": "1.0.0"})
 

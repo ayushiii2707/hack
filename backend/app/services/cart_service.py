@@ -10,11 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.constants import AuditAction, AuditActor, CartStatus, SessionState
 from app.core.exceptions import (
+    AppError,
     CartNotFoundError,
     ConflictError,
     EmptyCartError,
@@ -110,28 +112,82 @@ class CartService:
     def add_item(
         self, cart_id: str, product_id: str, quantity: int, *, actor: AuditActor = AuditActor.AGENT
     ) -> Cart:
+        """Add ``quantity`` of a product, merging into an existing line.
+
+        The merge is a guarded atomic UPDATE (``try_bump_quantity``), not a
+        read-then-write of a Python-computed sum: two concurrent adds to the
+        SAME line would otherwise both read the same starting quantity and
+        each commit the same (wrong) total, silently losing one customer's
+        click. Creating a brand-new line still races against a concurrent
+        first-add of the same product; that is resolved by the table's unique
+        constraint plus an ``IntegrityError`` retry that falls back to the
+        same atomic bump.
+        """
         cart = self.get_cart(cart_id)
         self._assert_cart_mutable(cart)
         session_id = cart.session_id
-        existing = self.repo.get_item(cart_id, product_id)
-        resulting_qty = quantity + (existing.quantity if existing else 0)
+        if quantity < 1:
+            raise InvalidQuantityError("Quantity must be at least 1.")
+        max_q = settings.max_item_quantity
 
-        self._assert_quantity_within_policy(
-            resulting_qty, cart_id=cart_id, product_id=product_id, session_id=session_id
-        )
-        product = self.products.assert_purchasable(product_id, resulting_qty)
+        resulting_qty = self.repo.try_bump_quantity(cart_id, product_id, quantity, max_quantity=max_q)
+        created = False
 
-        if existing:
-            self.repo.set_item_quantity(existing, resulting_qty)
-            action, reason = (
-                AuditAction.ITEM_QUANTITY_UPDATED,
-                f"Increased '{product.name}' to {resulting_qty} (added {quantity}).",
-            )
+        if resulting_qty is not None:
+            try:
+                product = self.products.assert_purchasable(product_id, resulting_qty)
+            except AppError:
+                self.db.rollback()
+                raise
         else:
-            self.repo.add_item(cart_id, product_id, quantity, product.price)
+            existing = self.repo.get_item(cart_id, product_id)
+            if existing is not None:
+                # The row exists; the only reason the guarded bump can fail for
+                # an existing row is the cap -- report it with the real numbers.
+                self._assert_quantity_within_policy(
+                    existing.quantity + quantity, cart_id=cart_id, product_id=product_id,
+                    session_id=session_id,
+                )
+                raise AssertionError("unreachable: policy check above always raises here")
+
+            # No row yet for this product -> this is a genuine new line.
+            self._assert_quantity_within_policy(
+                quantity, cart_id=cart_id, product_id=product_id, session_id=session_id
+            )
+            product = self.products.assert_purchasable(product_id, quantity)
+            try:
+                self.repo.add_item(cart_id, product_id, quantity, product.price)
+                resulting_qty = quantity
+                created = True
+            except IntegrityError:
+                # Lost the race to create the line: another request just
+                # inserted it. Fall back to bumping the row that now exists.
+                self.db.rollback()
+                resulting_qty = self.repo.try_bump_quantity(
+                    cart_id, product_id, quantity, max_quantity=max_q
+                )
+                if resulting_qty is None:
+                    existing = self.repo.get_item(cart_id, product_id)
+                    self._assert_quantity_within_policy(
+                        (existing.quantity if existing else 0) + quantity,
+                        cart_id=cart_id, product_id=product_id, session_id=session_id,
+                    )
+                    raise
+                try:
+                    product = self.products.assert_purchasable(product_id, resulting_qty)
+                except AppError:
+                    self.db.rollback()
+                    raise
+
+        if created:
             action, reason = (
                 AuditAction.ITEM_ADDED,
                 f"Added {quantity} x '{product.name}' at {product.price} paise each.",
+            )
+        else:
+            action, reason = (
+                AuditAction.ITEM_QUANTITY_UPDATED,
+                f"Increased '{product.name}' to {resulting_qty} (added {quantity}).",
             )
 
         self.audit.log_event(

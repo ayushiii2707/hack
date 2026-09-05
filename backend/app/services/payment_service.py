@@ -141,6 +141,8 @@ class PaymentService:
             raise RazorpayError("Razorpay is not configured on the server.")
         if order.status == OrderStatus.PAID:
             raise ConflictError("This order is already paid.")
+        if order.status == OrderStatus.CANCELLED:
+            raise ConflictError("This order was cancelled and cannot be paid.")
 
         if not order.razorpay_order_id:
             receipt = order.receipt or order.id
@@ -245,8 +247,22 @@ class PaymentService:
             self.db.commit()
             raise PaymentVerificationError("Payment could not be verified.")
 
-        # 2. Independent reconciliation with the gateway.
-        gp = fetch_payment(self.client, razorpay_payment_id)
+        # 2. Independent reconciliation with the gateway. A gateway-side failure
+        # here (e.g. the payment id does not exist at Razorpay at all) must be
+        # treated as "could not verify", not surfaced as a raw upstream error —
+        # this is caller-reachable input (a client-supplied payment id), and it
+        # must fail the same clean, audited way as a bad signature or a mismatch.
+        try:
+            gp = fetch_payment(self.client, razorpay_payment_id)
+        except RazorpayError as exc:
+            self.audit.log_payment_event(
+                action=AuditAction.PAYMENT_VERIFICATION_FAILED,
+                reason=f"Gateway fetch_payment failed: {exc}; order NOT marked paid.",
+                order_id=order.id, session_id=order.session_id, actor=AuditActor.SYSTEM,
+                metadata={"razorpay_payment_id": razorpay_payment_id},
+            )
+            self.db.commit()
+            raise PaymentVerificationError("Payment could not be verified against the gateway.") from exc
         problems: list[str] = []
         if gp.order_id and order.razorpay_order_id and gp.order_id != order.razorpay_order_id:
             problems.append("gateway order id mismatch")
@@ -314,6 +330,8 @@ class PaymentService:
         """
         if order.status == OrderStatus.PAID or self.payments.get_captured(order.id):
             raise ConflictError("This order is already paid.")
+        if order.status == OrderStatus.CANCELLED:
+            raise ConflictError("This order was cancelled; there is nothing to record.")
 
         # Idempotent: if the order is already failed and the newest attempt is a
         # terminal FAILED with nothing since, don't stack another attempt row.
@@ -407,6 +425,8 @@ class PaymentService:
     def create_payment_link(self, order: Order) -> dict:
         if order.status == OrderStatus.PAID:
             raise ConflictError("This order is already paid.")
+        if order.status == OrderStatus.CANCELLED:
+            raise ConflictError("This order was cancelled and cannot be paid.")
 
         existing = next(
             (p for p in self.payments.list_for_order(order.id)

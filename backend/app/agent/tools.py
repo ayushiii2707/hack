@@ -217,6 +217,26 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
             "price_cap": format_inr(reco.price_cap),
         })
 
+    # ---- accept_upsell / decline_upsell ----
+    # These relay an already-expressed customer decision to UpsellService,
+    # which owns the actual guard logic (must have been shown; cannot double
+    # -decide). They do NOT execute payment and do NOT bypass the one-shot
+    # upsell limit — they only record the decision on a recommendation the
+    # backend already generated via request_upsell.
+    def accept_upsell() -> str:
+        try:
+            result = upsell.accept(ctx.session_id)
+        except AppError as exc:
+            return _err(ctx, "accept_upsell", exc.code, exc.message)
+        return _ok(ctx, "accept_upsell", result)
+
+    def decline_upsell() -> str:
+        try:
+            result = upsell.decline(ctx.session_id)
+        except AppError as exc:
+            return _err(ctx, "decline_upsell", exc.code, exc.message)
+        return _ok(ctx, "decline_upsell", result)
+
     # ---- start_checkout ----
     def start_checkout() -> str:
         decision = policy.can_start_checkout()
@@ -270,6 +290,12 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
          "Ask the backend for the ONE allowed add-on recommendation for this cart. "
          "Only call this once, at cart review. If it is blocked, do not try again.",
          EmptyArgs),
+        (accept_upsell, "accept_upsell",
+         "Record that the customer accepted the upsell recommendation you already showed them "
+         "via request_upsell. Call add_to_cart separately if they want it added.", EmptyArgs),
+        (decline_upsell, "decline_upsell",
+         "Record that the customer declined the upsell recommendation you already showed them "
+         "via request_upsell.", EmptyArgs),
         (start_checkout, "start_checkout",
          "Move to checkout review and return the full total to show the customer before payment. "
          "This does NOT take payment.", EmptyArgs),
