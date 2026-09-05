@@ -12,7 +12,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.orm import Session
 
 from app.agent.prompts import SYSTEM_PROMPT
@@ -99,7 +99,11 @@ def _build_actions(ctx: ToolContext) -> list[UIAction]:
 
 
 def _to_lc_messages(history: list[ChatTurn], new_message: str) -> list:
-    msgs: list = [SystemMessage(content=SYSTEM_PROMPT)]
+    # No SystemMessage here — create_agent gets the system prompt via its own
+    # ``system_prompt=`` argument (langchain 1.x). Passing it in the message
+    # list instead makes the prebuilt agent treat it as ordinary context and
+    # tool-calling becomes unreliable.
+    msgs: list = []
     for turn in history:
         if turn.role == "assistant":
             msgs.append(AIMessage(content=turn.content))
@@ -317,7 +321,7 @@ def run_agent(
 
         from app.core.config import settings as _s
 
-        agent = create_agent(model, tools)
+        agent = create_agent(model, tools, system_prompt=SYSTEM_PROMPT)
         try:
             lc_result = agent.invoke(
                 {"messages": _to_lc_messages(history, message)},

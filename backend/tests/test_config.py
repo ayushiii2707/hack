@@ -49,3 +49,11 @@ def test_wildcard_hosts_block_production():
 def test_development_generates_ephemeral_secret():
     s = Settings(environment="development", session_token_secret="")
     assert len(s.session_token_secret) >= 32  # auto-generated for dev
+
+
+def test_default_gemini_model_is_not_a_retired_name():
+    # gemini-2.0-flash was retired by Google (API returns 404 NOT_FOUND);
+    # a fresh deploy on the default must use a model that still exists.
+    default = Settings().gemini_model
+    assert default and "flash" in default
+    assert default != "gemini-2.0-flash"

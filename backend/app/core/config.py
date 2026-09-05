@@ -50,7 +50,10 @@ class Settings(BaseSettings):
 
     # --- external providers ---
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    # A currently-available Gemini model that supports function calling. Google
+    # retires older aliases (e.g. gemini-2.0-flash) — override GEMINI_MODEL if
+    # the API returns 404 NOT_FOUND for this one.
+    gemini_model: str = "gemini-2.5-flash"
     gemini_timeout_seconds: float = 25.0
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""

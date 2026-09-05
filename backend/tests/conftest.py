@@ -18,6 +18,10 @@ os.environ["FREE_SHIPPING_THRESHOLD"] = "200000"
 os.environ["RAZORPAY_KEY_ID"] = "rzp_test_dummy"
 os.environ["RAZORPAY_KEY_SECRET"] = "dummysecret"
 os.environ["RAZORPAY_WEBHOOK_SECRET"] = "whsec_dummy"
+# No real LLM in the suite: the fallback-router tests assume no Gemini key, and
+# nothing here should ever make a live model call because a developer happens to
+# have GEMINI_API_KEY in their local .env.
+os.environ["GEMINI_API_KEY"] = ""
 
 import pytest
 from fastapi.testclient import TestClient
