@@ -1,0 +1,256 @@
+/* ============================================================================
+   Landing scene — full-screen particle wave + fixed split hero.
+   Structure & motion ported from the particle-site landing; palette tuned to
+   the Checkout Copilot gold accent. Presentation only.
+   ============================================================================ */
+
+.landing {
+  position: relative;
+  min-height: 100vh;
+  background: #050408;
+  color: #fff;
+  overflow-x: hidden;
+}
+/* runway: extra scroll height so the fixed scene has something to react to */
+.landing-runway {
+  height: 175vh;
+  width: 100%;
+}
+
+.particle-scene {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+}
+.particle-scene canvas { display: block; }
+
+/* gradient wash — transparent at the top, deep black at the base */
+.landing-wash {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(5, 4, 8, 0) 0%,
+    rgba(5, 4, 8, 0.35) 55%,
+    rgba(5, 4, 8, 0.92) 100%
+  );
+}
+
+/* white circle that zooms out on first paint */
+.landing-intro {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 220vmax;
+  height: 220vmax;
+  background: #fff;
+  z-index: 99;
+  transform-origin: center;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  animation: lz-zoom 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards,
+    lz-fade 0.8s ease 1.2s forwards;
+}
+@keyframes lz-zoom {
+  0% { transform: translate(-50%, -50%) scale(0); border-radius: 50%; }
+  100% { transform: translate(-50%, -50%) scale(1); border-radius: 0; }
+}
+@keyframes lz-fade {
+  to { opacity: 0; }
+}
+
+/* watermark wordmark, top-left */
+.landing-watermark {
+  position: fixed;
+  top: 18px;
+  left: 26px;
+  z-index: 100;
+  pointer-events: none;
+  font-family: "Space Grotesk", "Inter", sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.55);
+  opacity: 0;
+  animation: lz-logo 0.8s ease 1.2s forwards;
+}
+@keyframes lz-logo {
+  to { opacity: 0.85; }
+}
+
+/* ---- nav pill ---------------------------------------------------------- */
+.lnav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 56px;
+  padding: 0 24px;
+}
+.lnav-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(10, 10, 20, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 100px;
+  padding: 6px 8px 6px 12px;
+  box-shadow: 0 2px 24px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  animation: lz-fadein 0.7s ease 1.4s forwards;
+}
+@keyframes lz-fadein {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.lnav-brand { display: flex; align-items: center; gap: 7px; margin-right: 4px; }
+.lnav-tag {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.lnav-sep { width: 1px; height: 16px; background: rgba(255, 255, 255, 0.12); margin: 0 2px; }
+.lnav-link {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.68);
+  font: 400 13px "Inter", sans-serif;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: color 0.2s ease;
+  white-space: nowrap;
+}
+.lnav-link:hover { color: #fff; }
+.lnav-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.95);
+  border: none;
+  color: #0a0a14;
+  font: 600 12.5px "Inter", sans-serif;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  padding: 7px 15px;
+  border-radius: 100px;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+.lnav-cta:hover { background: #fff; transform: translateY(-1px); }
+@media (max-width: 720px) {
+  .lnav-link { display: none; }
+  .lnav-tag { display: none; }
+}
+
+/* ---- hero ------------------------------------------------------------- */
+.landing-hero {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6%;
+  padding: 72px 8% 0;
+  pointer-events: none;
+}
+.landing-hero .lh-cta { pointer-events: auto; }
+
+.lh-left { flex: 1 1 0; max-width: 48%; }
+.lh-heading {
+  margin: 0;
+  font-family: "Space Grotesk", "Inter", sans-serif;
+  font-size: clamp(28px, 4vw, 56px);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.035em;
+  color: #fff;
+  min-height: 2.3em;
+}
+.lh-caret {
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--gold, #f0c060);
+  animation: lz-blink 1s step-end infinite;
+}
+.lh-caret.off { animation: none; opacity: 0; }
+@keyframes lz-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.lh-right { flex: 1 1 0; max-width: 34%; }
+.lh-copy {
+  margin: 0 0 64px;
+  font-size: 14.5px;
+  font-weight: 400;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.55);
+  opacity: 0;
+  transform: translateY(16px);
+  animation: lz-rise 0.7s ease 1.9s forwards;
+}
+@keyframes lz-rise {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.lh-cta-wrap {
+  opacity: 0;
+  transform: translateY(60px) scale(0.92);
+  transition:
+    opacity 0.8s cubic-bezier(0.34, 1.56, 0.64, 1),
+    transform 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.lh-cta-wrap.in { opacity: 1; transform: translateY(0) scale(1); }
+.lh-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 100px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font: 500 18px "Inter", sans-serif;
+  letter-spacing: -0.01em;
+  padding: 16px 36px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.25s ease;
+}
+.lh-cta:hover {
+  background: rgba(240, 192, 96, 0.16);
+  border-color: rgba(240, 192, 96, 0.55);
+  transform: translateY(-2px);
+}
+
+@media (max-width: 960px) {
+  .landing-hero {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 26px;
+    padding: 96px 7% 0;
+  }
+  .lh-left, .lh-right { flex: 0 0 auto; max-width: 100%; }
+  .lh-copy { margin-bottom: 30px; }
+  .lh-heading { font-size: clamp(26px, 7vw, 42px); min-height: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-intro, .landing-watermark, .lnav-pill, .lh-copy, .lh-cta-wrap, .lh-caret {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+  .lh-cta-wrap { opacity: 1; transform: none; }
+  .lh-copy { opacity: 1; transform: none; }
+}

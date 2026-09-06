@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { ChatPanel, type ChatMessage } from "./components/ChatPanel";
 import { ProductGrid } from "./components/ProductGrid";
 import { CartPanel } from "./components/CartPanel";
 import { UpsellCard } from "./components/UpsellCard";
 import { CheckoutModal, type CheckoutPhase } from "./components/CheckoutModal";
 import { AuditDrawer } from "./components/AuditDrawer";
+
+// Landing pulls in three.js — keep it out of the main bundle.
+const Landing = lazy(() => import("./landing/Landing").then((m) => ({ default: m.Landing })));
 import {
   ApiError,
   api,
@@ -19,7 +22,25 @@ import {
 } from "./lib/api";
 import { openRazorpayCheckout, razorpayAvailable } from "./lib/razorpay";
 
+const ENTERED_KEY = "cc.entered";
+
 export default function App() {
+  const [entered, setEntered] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(ENTERED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const enter = useCallback(() => {
+    try {
+      sessionStorage.setItem(ENTERED_KEY, "1");
+    } catch {
+      /* ignore */
+    }
+    setEntered(true);
+  }, []);
+
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [health, setHealth] = useState<{ razorpay_configured: boolean; gemini_configured: boolean } | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -243,6 +264,14 @@ export default function App() {
     () => upsell?.available && !session?.upsell_accepted && !session?.upsell_declined,
     [upsell, session],
   );
+
+  if (!entered) {
+    return (
+      <Suspense fallback={<div style={{ minHeight: "100vh", background: "#050408" }} />}>
+        <Landing onEnter={enter} />
+      </Suspense>
+    );
+  }
 
   return (
     <div className="app">
