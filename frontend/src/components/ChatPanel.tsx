@@ -38,7 +38,7 @@ export function ChatPanel({
   return (
     <div className="panel chat">
       <header>
-        <span className="hd-ico">💬</span> Checkout Copilot
+        <span className="hd-ico">💬</span> PayPilot
       </header>
       <div className={`messages${messages.length === 0 ? " empty" : ""}`}>
         {messages.length === 0 ? (
@@ -73,7 +73,7 @@ export function ChatPanel({
       <div className="composer">
         <input
           value={text}
-          placeholder="Message Checkout Copilot…"
+          placeholder="Message PayPilot…"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit()}
         />

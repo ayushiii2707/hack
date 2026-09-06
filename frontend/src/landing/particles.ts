@@ -42,7 +42,7 @@ export function generateStars(count: number): Float32Array {
   return pos;
 }
 
-/** Warm gold / deep-ember palette to match the Checkout Copilot accent. */
+/** Warm gold / deep-ember palette to match the PayPilot accent. */
 export function generateWaveColors(count: number): Float32Array {
   const col = new Float32Array(count * 3);
   const gold = [240 / 255, 192 / 255, 96 / 255];

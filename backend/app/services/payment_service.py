@@ -464,7 +464,7 @@ class PaymentService:
             self.client,
             amount_paise=order.amount,
             currency=order.currency,
-            description=f"Checkout Copilot order {order.id}",
+            description=f"PayPilot order {order.id}",
             reference_id=order.receipt or order.id,
             customer=None,  # never send arbitrary customer contact from a request
             notes={"internal_order_id": order.id},

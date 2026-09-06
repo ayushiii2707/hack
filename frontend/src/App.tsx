@@ -285,8 +285,8 @@ export default function App() {
 
       <nav className="nav">
         <div className="wordmark">
-          <span className="mark">C</span>
-          Checkout&nbsp;<b>Copilot</b>
+          <span className="mark">P</span>
+          Pay<b>Pilot</b>
         </div>
         <span className="divider" />
         <div className="chips">

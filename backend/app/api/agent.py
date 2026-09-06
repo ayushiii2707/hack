@@ -18,7 +18,7 @@ from app.schemas.agent import AgentChatIn, AgentChatOut
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 
-@router.post("/chat", response_model=AgentChatOut, summary="Talk to Checkout Copilot")
+@router.post("/chat", response_model=AgentChatOut, summary="Talk to PayPilot")
 def chat(
     body: AgentChatIn,
     session: ShopSession = Depends(require_session),

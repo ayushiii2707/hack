@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     # --- infra ---
     database_url: str = "sqlite:///./checkout_copilot.db"
-    app_name: str = "Checkout Copilot"
+    app_name: str = "PayPilot"
     environment: str = "development"  # development | staging | production
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     trusted_hosts: str = "*"  # comma list; "*" disables host checking (dev only)

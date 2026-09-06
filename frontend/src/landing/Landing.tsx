@@ -60,7 +60,7 @@ export function Landing({ onEnter }: { onEnter: () => void }) {
       <div className="landing-intro" />
 
       {/* watermark wordmark, top-left */}
-      <div className="landing-watermark">Checkout&nbsp;Copilot</div>
+      <div className="landing-watermark">PayPilot</div>
 
       <LandingNav onEnter={onEnter} />
 

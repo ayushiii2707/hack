@@ -9,7 +9,7 @@ export function LandingNav({ onEnter }: { onEnter: () => void }) {
             <circle cx="9" cy="9" r="8" stroke="rgba(255,255,255,0.6)" strokeWidth="1.5" />
             <circle cx="9" cy="9" r="3.5" fill="rgba(255,255,255,0.7)" />
           </svg>
-          <span className="lnav-tag"># CHECKOUT COPILOT</span>
+          <span className="lnav-tag"># PAYPILOT</span>
         </div>
 
         <div className="lnav-sep" />
